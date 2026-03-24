@@ -95,15 +95,28 @@ def load_all_data(start_date, end_date, custom_equity_tuple=None, custom_bond_tu
 
     # --- Fungsi Ekstraksi yang melempar ERROR jika gagal ---
     # --- Fungsi Ekstraksi yang melempar ERROR jika gagal ---
-    def fetch_and_clean_data(ticker_list, field, params, name="Data"):
+    def fetch_and_clean_data(ticker_list, field, params, name="Data", batch_size=10):
         if not ticker_list: return pd.DataFrame()
         
-        df = rd.get_data(universe=ticker_list, fields=field, parameters=params)
+        all_dfs = []
         
-        if df.empty: 
-            raise ValueError(f"{name} Kosong dari API Refinitiv.")
+        # Pecah daftar ticker menjadi batch kecil
+        for i in range(0, len(ticker_list), batch_size):
+            batch = ticker_list[i:i + batch_size]
+            try:
+                df_batch = rd.get_data(universe=batch, fields=field, parameters=params)
+                if not df_batch.empty:
+                    all_dfs.append(df_batch)
+            except Exception as e:
+                st.warning(f"Gagal menarik sebagian data {name} (Batch {i//batch_size + 1}): {e}")
+                
+        if not all_dfs:
+            raise ValueError(f"{name} kosong dari API Refinitiv setelah semua percobaan.")
             
-        # Standardisasi nama kolom dari berbagai kemungkinan output Refinitiv
+        # Gabungkan semua batch menjadi satu DataFrame
+        df = pd.concat(all_dfs, ignore_index=True)
+        
+        # Standardisasi nama kolom (seperti perbaikan sebelumnya)
         rename_map = {
             'Net Asset Value': 'NAV',
             'TR.NETASSETVAL': 'NAV',
@@ -119,8 +132,7 @@ def load_all_data(start_date, end_date, custom_equity_tuple=None, custom_bond_tu
         
         df['Date'] = pd.to_datetime(df['Date'])
         df = df.drop_duplicates(subset=['Instrument', 'Date'], keep='last')
-        return df
-
+    return df
     params = {'SDate': START_DATE_STR, 'EDate': END_DATE_STR, 'Frq': FREQ}
 
     # Ekstrak Data
