@@ -1251,13 +1251,13 @@ with tab_leaderboard_split:
         # UBAH: Panggil dengan days=5
         leaderboard = calculate_daily_leaderboard(df_lb, days=5)
         if not leaderboard.empty:
-            leaderboard['Change_Color'] = leaderboard['Rank_Change'].apply(
+            leaderboard['Climb/Lag'] = leaderboard['Rank_Change'].apply(
                 lambda x: '🚀 Top Climber' if x > 0 else ('📉 Top Laggard' if x < 0 else 'Stabil')
             )
             
             # UBAH: Ganti semua Return_7d menjadi Return_5d
             leaderboard['Return_5d'] = leaderboard['Return_5d'] * 100
-            leaderboard_display = leaderboard[['Instrument', 'Return_5d', 'Rank_Today', 'Rank_Change', 'Change_Color']].copy()
+            leaderboard_display = leaderboard[['Instrument', 'Return_5d', 'Rank_Today', 'Rank_Change', 'Climb/Lag']].copy()
             leaderboard_display['Return_5d'] = leaderboard_display['Return_5d'].round(2).astype(str) + '%'
 
             col1, col2 = st.columns(2)
