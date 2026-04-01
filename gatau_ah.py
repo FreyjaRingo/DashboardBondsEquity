@@ -1795,19 +1795,27 @@ with tab_compare:
         st.plotly_chart(fig_prices, use_container_width=True)
         
         # Kalkulasi Return Kumulatif
+        # Kalkulasi Return Kumulatif
         returns_cum = (df_compare.pct_change().fillna(0) + 1).cumprod() - 1
         df_returns_pct = returns_cum * 100
         
         fig_returns = px.line(df_returns_pct, x=df_returns_pct.index, y=df_returns_pct.columns, title="Return Kumulatif (%)")
         fig_returns.add_hline(y=0, line_dash="dash", line_color="gray", opacity=0.5)
         
-        # --- Tambahkan anotasi angka (persentase) di ujung kanan garis ---
+        # --- Ekstrak warna otomatis dari Plotly Express ---
+        line_colors = {}
+        for trace in fig_returns.data:
+            line_colors[trace.name] = trace.line.color
+
+        # --- Tambahkan anotasi angka (persentase) berlatar warna ---
         if not df_returns_pct.empty:
             last_date = df_returns_pct.index[-1]
             for col in df_returns_pct.columns:
                 last_val = df_returns_pct[col].iloc[-1]
                 
-                # Menambahkan label teks tanpa panah tepat di samping titik data terakhir
+                # Ambil warna garis, gunakan abu-abu sebagai cadangan jika tidak ditemukan
+                bg_color = line_colors.get(col, "gray")
+                
                 fig_returns.add_annotation(
                     x=last_date,
                     y=last_val,
@@ -1815,15 +1823,17 @@ with tab_compare:
                     showarrow=False,
                     xanchor="left",
                     xshift=8, 
-                    font=dict(size=11)
+                    font=dict(size=11, color="white"), # Ubah font menjadi putih agar terbaca
+                    bgcolor=bg_color,                  # Latar belakang mengikuti warna garis
+                    borderpad=3,                       # Jarak antara teks dan tepi kotak warna
+                    opacity=0.9                        # Sedikit transparansi agar elegan
                 )
 
-        # Tambahkan margin kanan (r=60) agar angka tidak terpotong batas kanvas grafik
         fig_returns.update_layout(
             xaxis_title="Tanggal", 
             yaxis_title="Return (%)", 
             legend=legend_layout,
-            margin=dict(r=60) 
+            margin=dict(r=70) # Margin diperlebar sedikit lagi untuk ruang kotak warna
         )
         st.plotly_chart(fig_returns, use_container_width=True)
         
