@@ -1390,8 +1390,8 @@ tab_overview, tab_leaderboard_split,  tab_performance, tab_correlation, tab_comp
     "📊 Performa & Ranking", 
     "📈 Korelasi",  
     "📉 Perbandingan Historis",
-    "🏛️ Obligasi Negara",
-    "🎯 Rekomendasi Refinitiv"
+    "🎯 Rekomendasi Refinitiv",
+    "🏛️ Obligasi Negara"
 ])
 
 # --- Tab 1: Ringkasan ---
