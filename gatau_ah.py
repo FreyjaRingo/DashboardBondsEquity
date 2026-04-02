@@ -95,177 +95,6 @@ default_map_equity_idr = {
     'LP63505555': 'Schroder Dana Prestasi', 'LP63505558': 'Schroder Dana Prestasi Plus', 'LP63505427': 'TRIM Kapital'
 }
 
-default_ISIN_bonds = [
-    'IDFR0100=', 'IDFR0101=', 'IDFR0102=', 'IDFR0103=', 'IDFR0104=', 'IDFR0040=', 'IDFR0042=', 'IDFR0047=', 'IDFR0050=',
-    'IDFR0052=', 'IDFR0054=', 'IDFR0056=', 'IDFR0057=', 'IDFR0058=', 'IDFR0059=', 'IDFR0062=', 'IDFR0064=', 'IDFR0065=',
-    'IDFR0067=', 'IDFR0068=', 'IDFR0071=', 'IDFR0072=', 'IDFR0073=', 'IDFR0074=', 'IDFR0075=', 'IDFR0076=', 'IDFR0078=',
-    'IDFR0079=', 'IDFR0080=', 'IDFR0081=', 'IDFR0082=', 'IDFR0083=', 'IDFR0084=', 'IDFR0085=', 'IDFR0086=', 'IDFR0087=',
-    'IDFR0088=', 'IDFR0089=', 'IDFR0090=', 'IDFR0091=', 'IDFR0092=', 'IDFR0093=', 'IDFR0094=', 'IDFR0095=', 'IDFR0096=',
-    'IDFR0097=', 'IDFR0098=', 'US71567RAC07', 'US71567RAD89', 'US71567RAF38', 'US71567RAH93', 'US71567RAU05', 'US71567RAX44',
-    'US71567RAM88', 'USY68613AA90', 'US71567RAP10', 'IDSUKIBAD46=', 'US455780CV60', 'US71567RAY27', 'IDSUKIBAB89=',
-    'IDSUKIBAE13=', 'IDSUKIBAQ92=', '455780CW4=', 'IDSUKIBAC62=', 'IDSUKIBAF93=', 'ID116760673=', 'US455780BV79', 'USY20721BQ18',
-    'US455780DM52', 'USY20721BT56', 'US455780CD62', 'US455780CF11', 'US455780DQ66', 'US455780CH76', 'US455780CK06', 'US455780DT06',
-    'US455780CQ75', 'US455780CS32', 'US455780DJ24', '455780DN3=', 'US455780DR40', 'US455780DU78', '455780DX1=', 'USY20721BB49',
-    'USY20721BE87', 'ID101363635=', 'USY20721BM04', 'USY20721BP35', 'USY20721BR90', 'ID164844153=', 'US455780CE46', 'US455780CJ33',
-    'US455780CN45', 'US455780CR58', 'US455780CT15', 'US455780DK96', 'US455780DP83', 'US455780DS23', '455780DV5=', '455780DW3=',
-    '455780DG8=', 'IDORI020=', 'IDORI021=', 'IDORI022=', 'IDORI023T3=', 'IDORI023T6=', 'IDORI024T3=', 'IDORI024T6=', 'IDORI025T6=',
-    'IDORI025T3=', 'IDSUKIN2206=', 'IDSUKIN2503=', 'IDPBS017=', 'IDSUKIN2800=', 'IDSUKIN3204=', 'IDSUKIN3402=', 'IDSUKIN3501=',
-    'IDSUKIN3709=', 'IDSUKIN4004=', 'IDPBS029=', 'IDPBS003=', 'IDPBS030=', 'IDPBS032=', 'IDPBS033=', 'IDSUKIN4806=', 'IDPBS035=',
-    'IDPBS036=', 'IDPBS037=', 'IDPBS038=', 'IDPBS004=JK', 'IDPBS005=', 'IDSUKIN1703=', 'IDPLNEG1024=', 'IDSR015=', 'IDSR016=',
-    'IDSR017=', 'IDSR018T3=', 'IDSR018T5=', 'IDSR019T3=', 'IDSR019T5=', 'IDSR020T3=', 'IDSR020T5=', 'IDSUKIN3006A=', 'IDSUKIN3105A=',
-    '455780AT3=', 'IDSR021T3=', 'IDSR021T5='
-]
-
-default_map_isin_bond = {
-    'IDFR0100=': 'FR100',
-    'IDFR0101=': 'FR101',
-    'IDFR0102=': 'FR102',
-    'IDFR0103=': 'FR103',
-    'IDFR0104=': 'FR104',
-    'IDFR0040=': 'FR40',
-    'IDFR0042=': 'FR42',
-    'IDFR0047=': 'FR47',
-    'IDFR0050=': 'FR50',
-    'IDFR0052=': 'FR52',
-    'IDFR0054=': 'FR54',
-    'IDFR0056=': 'FR56',
-    'IDFR0057=': 'FR57',
-    'IDFR0058=': 'FR58',
-    'IDFR0059=': 'FR59',
-    'IDFR0062=': 'FR62',
-    'IDFR0064=': 'FR64',
-    'IDFR0065=': 'FR65',
-    'IDFR0067=': 'FR67',
-    'IDFR0068=': 'FR68',
-    'IDFR0071=': 'FR71',
-    'IDFR0072=': 'FR72',
-    'IDFR0073=': 'FR73',
-    'IDFR0074=': 'FR74',
-    'IDFR0075=': 'FR75',
-    'IDFR0076=': 'FR76',
-    'IDFR0078=': 'FR78',
-    'IDFR0079=': 'FR79',
-    'IDFR0080=': 'FR80',
-    'IDFR0081=': 'FR81',
-    'IDFR0082=': 'FR82',
-    'IDFR0083=': 'FR83',
-    'IDFR0084=': 'FR84',
-    'IDFR0085=': 'FR85',
-    'IDFR0086=': 'FR86',
-    'IDFR0087=': 'FR87',
-    'IDFR0088=': 'FR88',
-    'IDFR0089=': 'FR89',
-    'IDFR0090=': 'FR90',
-    'IDFR0091=': 'FR91',
-    'IDFR0092=': 'FR92',
-    'IDFR0093=': 'FR93',
-    'IDFR0094=': 'FR94',
-    'IDFR0095=': 'FR95',
-    'IDFR0096=': 'FR96',
-    'IDFR0097=': 'FR97',
-    'IDFR0098=': 'FR98',
-    'US71567RAC07': 'INDOIS24',
-    'US71567RAD89': 'INDOIS25',
-    'US71567RAF38': 'INDOIS26',
-    'US71567RAH93': 'INDOIS27',
-    'US71567RAU05': 'INDOIS27NEW',
-    'US71567RAX44': 'INDOIS28NEW',
-    'US71567RAM88': 'INDOIS29',
-    'USY68613AA90': 'INDOIS29N',
-    'US71567RAP10': 'INDOIS30N',
-    'IDSUKIBAD46=': 'INDOIS30NN5.00',
-    'US455780CV60': 'INDOIS31',
-    'US71567RAY27': 'INDOIS33',
-    'IDSUKIBAB89=': 'INDOIS34',
-    'IDSUKIBAE13=': 'INDOIS34N',
-    'IDSUKIBAQ92=': 'INDOIS50',
-    '455780CW4=': 'INDOIS51',
-    'IDSUKIBAC62=': 'INDOIS54',
-    'IDSUKIBAF93=': 'INDOIS54N',
-    'ID116760673=': 'INDON25',
-    'US455780BV79': 'INDON26',
-    'USY20721BQ18': 'INDON27',
-    'US455780DM52': 'INDON27N4.15',
-    'USY20721BT56': 'INDON27NEW',
-    'US455780CD62': 'INDON28',
-    'US455780CF11': 'INDON28NEW',
-    'US455780DQ66': 'INDON28NN4.5',
-    'US455780CH76': 'INDON29',
-    'US455780CK06': 'INDON29N',
-    'US455780DT06': 'INDON29NN4.4',
-    'US455780CQ75': 'INDON30',
-    'US455780CS32': 'INDON30NEW',
-    'US455780DJ24': 'INDON32',
-    '455780DN3=': 'INDON32N4.65',
-    'US455780DR40': 'INDON33',
-    'US455780DU78': 'INDON34',
-    '455780DX1=': 'INDON34N4.75',
-    'USY20721BB49': 'INDON42',
-    'USY20721BE87': 'INDON43',
-    'ID101363635=': 'INDON44',
-    'USY20721BM04': 'INDON45',
-    'USY20721BP35': 'INDON46',
-    'USY20721BR90': 'INDON47',
-    'ID164844153=': 'INDON47NEW',
-    'US455780CE46': 'INDON48',
-    'US455780CJ33': 'INDON49',
-    'US455780CN45': 'INDON49N',
-    'US455780CR58': 'INDON50',
-    'US455780CT15': 'INDON50NEW',
-    'US455780DK96': 'INDON52',
-    'US455780DP83': 'INDON52N5.45',
-    'US455780DS23': 'INDON53',
-    '455780DV5=': 'INDON54',
-    '455780DW3=': 'INDON54N5.15',
-    '455780DG8=': 'INDON61',
-    'IDORI020=': 'ORI20',
-    'IDORI021=': 'ORI21',
-    'IDORI022=': 'ORI22',
-    'IDORI023T3=': 'ORI23T3',
-    'IDORI023T6=': 'ORI23T6',
-    'IDORI024T3=': 'ORI24T3',
-    'IDORI024T6=': 'ORI24T6',
-    'IDORI025T6=': 'ORI25T3',
-    'IDORI025T3=': 'ORI25T6',
-    'IDSUKIN2206=': 'PBS12',
-    'IDSUKIN2503=': 'PBS15',
-    'IDPBS017=': 'PBS17',
-    'IDSUKIN2800=': 'PBS18',
-    'IDSUKIN3204=': 'PBS21',
-    'IDSUKIN3402=': 'PBS22',
-    'IDSUKIN3501=': 'PBS23',
-    'IDSUKIN3709=': 'PBS25',
-    'IDSUKIN4004=': 'PBS28',
-    'IDPBS029=': 'PBS29',
-    'IDPBS003=': 'PBS3',
-    'IDPBS030=': 'PBS30',
-    'IDPBS032=': 'PBS32',
-    'IDPBS033=': 'PBS33',
-    'IDSUKIN4806=': 'PBS34',
-    'IDPBS035=': 'PBS35',
-    'IDPBS036=': 'PBS36',
-    'IDPBS037=': 'PBS37',
-    'IDPBS038=': 'PBS38',
-    'IDPBS004=JK': 'PBS4',
-    'IDPBS005=': 'PBS5',
-    'IDSUKIN1703=': 'PBS7',
-    'IDPLNEG1024=': 'PPLN03ACN5',
-    'IDSR015=': 'SR15',
-    'IDSR016=': 'SR16',
-    'IDSR017=': 'SR17',
-    'IDSR018T3=': 'SR18T3',
-    'IDSR018T5=': 'SR18T5',
-    'IDSR019T3=': 'SR19T3',
-    'IDSR019T5=': 'SR19T5',
-    'IDSR020T3=': 'SR20T3',
-    'IDSR020T5=': 'SR20T5',
-    'IDSUKIN3006A=': 'SR21T3',
-    'IDSUKIN3105A=': 'SR21T5',
-    '455780AT3=': 'INDON35N',
-    'IDSR021T3=': 'SR21T3',
-    'IDSR021T5=': 'SR21T5'
-}
-
 # 2. USD Equity
 default_tickers_equity_usd = [
     'LP68783082', 'LP68316907', 'LP68640621', 'LP68819234', 'LP68697607',
@@ -401,10 +230,7 @@ def load_all_data(start_date, end_date, currency='IDR', custom_equity_tuple=None
             'TR.SETTLEMENTPRICE': 'Settlement Price',
             'TR.MidPrice': 'Mid Price',
             'TR.MidPrice.date': 'Date',
-            'TR.MIDPRICE': 'Mid Price',
-            'TR.ASKPRICE': 'Ask Price',
-            'TR.ASKPRICE.date': 'Date',
-            'Ask Price': 'Ask Price'
+            'TR.MIDPRICE': 'Mid Price'
         }
         df = df.rename(columns=rename_map)
         
@@ -422,8 +248,7 @@ def load_all_data(start_date, end_date, currency='IDR', custom_equity_tuple=None
     df_suku_bunga_raw = fetch_and_clean_data(tickers_suku_bunga, ['TR.BIDYIELD.date', 'TR.BIDYIELD'], params, "Suku Bunga")
     df_mata_uang_raw = fetch_and_clean_data(tickers_mata_uang, ['TR.MidPrice.date', 'TR.MidPrice'], params, "Mata Uang")
     df_komoditas_raw = fetch_and_clean_data(tickers_komoditas, ['TR.SettlementPrice.date', 'TR.SettlementPrice'], params, "Komoditas")
-    df_gov_bonds_raw = fetch_and_clean_data(default_ISIN_bonds, ['TR.ASKPRICE.date', 'TR.ASKPRICE'], params, "Obligasi Negara")
-    
+
     # --- Penyejajaran Data (Align) ---
     if df_equity_raw.empty:
         st.error("Data Equity kosong. Tidak dapat melanjutkan.")
@@ -448,13 +273,11 @@ def load_all_data(start_date, end_date, currency='IDR', custom_equity_tuple=None
     df_suku_bunga_aligned = align_to_master(df_suku_bunga_raw, master_dates, 'Bid Yield')
     df_mata_uang_aligned = align_to_master(df_mata_uang_raw, master_dates, 'Mid Price')    
     df_komoditas_aligned = align_to_master(df_komoditas_raw, master_dates, 'Settlement Price')
-    df_gov_bonds_aligned = align_to_master(df_gov_bonds_raw, master_dates, 'Ask Price')
-    
+
     # --- Mapping Nama dan Pivot untuk Analisis ---
     df_equity_aligned['Instrument'] = df_equity_aligned['Instrument'].map(map_ticker_equity)
     df_bond_aligned['Instrument'] = df_bond_aligned['Instrument'].map(map_ticker_bond)
-    df_gov_bonds_aligned['Instrument'] = df_gov_bonds_aligned['Instrument'].map(default_map_isin_bond).fillna(df_gov_bonds_aligned['Instrument'])
-    
+
     def safe_pivot(df, val_col):
         if df.empty or 'Date' not in df.columns:
             return pd.DataFrame()
@@ -466,8 +289,7 @@ def load_all_data(start_date, end_date, currency='IDR', custom_equity_tuple=None
     df_suku_bunga_wide = safe_pivot(df_suku_bunga_aligned, 'Bid Yield')
     df_mata_uang_wide = safe_pivot(df_mata_uang_aligned, 'Mid Price')
     df_komoditas_wide = safe_pivot(df_komoditas_aligned, 'Settlement Price')
-    df_gov_bonds_wide = safe_pivot(df_gov_bonds_aligned, 'Ask Price')
-    
+
     # Gabungkan semua data untuk kemudahan akses
     all_data = {
         'equity': df_equity_wide,
@@ -476,10 +298,11 @@ def load_all_data(start_date, end_date, currency='IDR', custom_equity_tuple=None
         'suku_bunga': df_suku_bunga_wide,
         'mata_uang': df_mata_uang_wide,
         'komoditas': df_komoditas_wide,
-        'gov_bonds': df_gov_bonds_wide
     }
 
     return all_data, start_date, end_date
+
+
 
 # ==================== FUNGSI UNTUK MENGHITUNG METRIK DAN SKOR ====================
 def calculate_metrics(price_data, benchmark_series, risk_free_rate, eval_window=None):
@@ -1283,7 +1106,6 @@ df_index_full = all_data['index']
 df_komoditas_full = all_data['komoditas']
 df_mata_uang_full = all_data['mata_uang']
 df_suku_bunga_full = all_data['suku_bunga']
-df_gov_bonds_full = all_data['gov_bonds']
 
 risk_free_rate = st.session_state.risk_free_rate
 selected_benchmark_ticker = st.session_state.selected_benchmark_ticker
@@ -1322,7 +1144,6 @@ df_index = safe_slice(df_index_full, ana_start_dt, ana_end_dt)
 df_komoditas = safe_slice(df_komoditas_full, ana_start_dt, ana_end_dt)
 df_mata_uang = safe_slice(df_mata_uang_full, ana_start_dt, ana_end_dt)
 df_suku_bunga = safe_slice(df_suku_bunga_full, ana_start_dt, ana_end_dt)
-df_gov_bonds = safe_slice(df_gov_bonds_full, ana_start_dt, ana_end_dt)
 
 df_all_instruments = pd.concat([df_equity, df_bond], axis=1)
 df_all_instruments = ensure_unique_columns(df_all_instruments)
@@ -1384,14 +1205,13 @@ ranked_products_bond = calculate_ranking_scores(metrics_bond, weights=weights_di
 leaderboard_daily = calculate_daily_leaderboard(df_all_instruments, days=7)
 
 # ==================== TABS ====================
-tab_overview, tab_leaderboard_split,  tab_performance, tab_correlation, tab_compare, tab_recommendation, tab_gov_bonds = st.tabs([
+tab_overview, tab_leaderboard_split,  tab_performance, tab_correlation, tab_compare, tab_recommendation = st.tabs([
     "📋 Ringkasan", 
     "🏆 Leaderboard", 
     "📊 Performa & Ranking", 
     "📈 Korelasi",  
     "📉 Perbandingan Historis",
-    "🎯 Rekomendasi Refinitiv",
-    "🏛️ Obligasi Negara"
+    "🎯 Rekomendasi Refinitiv"
 ])
 
 # --- Tab 1: Ringkasan ---
@@ -2161,43 +1981,8 @@ with tab_compare:
             
     else:
         st.info("Silakan pilih instrumen dari dropdown di atas untuk memulai analisis.")
-       
-# ==================== TAB 6: GRAFIK OBLIGASI NEGARA ====================
-with tab_gov_bonds:
-    st.header("🏛️ Grafik Harga Obligasi Negara (Ask Price)")
-    st.info("Tab ini memvisualisasikan pergerakan Harga Penawaran (Ask Price) murni untuk instrumen SBN/SUN/Sukuk yang ditarik dari API Refinitiv.")
-    
-    if not df_gov_bonds.empty:
-        available_gov_bonds = df_gov_bonds.columns.tolist()
         
-        selected_gov_bonds = st.multiselect(
-            "Pilih Seri Obligasi untuk Ditampilkan:",
-            options=available_gov_bonds,
-            default=available_gov_bonds[:min(3, len(available_gov_bonds))] if available_gov_bonds else [],
-            key="gov_bonds_multiselect"
-        )
-        
-        if selected_gov_bonds:
-            # FFill dan BFill digunakan untuk menyambungkan titik jika ada hari libur
-            df_gov_plot = df_gov_bonds[selected_gov_bonds].copy()
-            df_gov_plot = df_gov_plot.ffill().bfill()
-            
-            fig_gov = px.line(df_gov_plot, x=df_gov_plot.index, y=df_gov_plot.columns, title="Pergerakan Harga Ask (Ask Price) Obligasi")
-            
-            legend_layout_gov = dict(orientation="h", yanchor="top", y=-0.2, xanchor="center", x=0.5, title=None)
-            fig_gov.update_layout(
-                xaxis_title="Tanggal", 
-                yaxis_title="Ask Price", 
-                legend=legend_layout_gov,
-                hovermode="x unified"
-            )
-            st.plotly_chart(fig_gov, use_container_width=True)
-        else:
-            st.info("Silakan pilih minimal 1 seri obligasi dari menu dropdown di atas.")
-    else:
-        st.warning("Data Obligasi Negara tidak tersedia. Pastikan Anda sudah mengekstrak data dari sidebar.")
-        
-# ==================== TAB 7: REKOMENDASI FUNDAMENTAL (MANUAL UPLOAD) ====================
+# ==================== TAB 6: REKOMENDASI FUNDAMENTAL (MANUAL UPLOAD) ====================
 with tab_recommendation:
     st.header("🎯 Peringkat Fundamental (Data Manual)")
     st.info("Unggah file Excel atau CSV berisi metrik fundamental. Sistem memprioritaskan skor tinggi untuk Alpha/Sharpe/Treynor dan skor rendah untuk StdDev.")
@@ -2242,6 +2027,7 @@ with tab_recommendation:
         except Exception as e:
             st.error(f"❌ Gagal membaca dokumen: {e}")
 
+    # 4. Logika Tampilan (Render UI)
     # 4. Logika Tampilan (Render UI)
     if not data_valid:
         # Jika belum ada file atau file salah, tampilkan panduan & template
