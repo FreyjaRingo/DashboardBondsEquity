@@ -1384,7 +1384,7 @@ ranked_products_bond = calculate_ranking_scores(metrics_bond, weights=weights_di
 leaderboard_daily = calculate_daily_leaderboard(df_all_instruments, days=7)
 
 # ==================== TABS ====================
-tab_overview, tab_leaderboard_split,  tab_performance, tab_correlation, tab_compare, tab_recommendation = st.tabs([
+tab_overview, tab_leaderboard_split,  tab_performance, tab_correlation, tab_compare, tab_recommendation, tab_gov_bonds = st.tabs([
     "📋 Ringkasan", 
     "🏆 Leaderboard", 
     "📊 Performa & Ranking", 
@@ -2242,7 +2242,6 @@ with tab_recommendation:
         except Exception as e:
             st.error(f"❌ Gagal membaca dokumen: {e}")
 
-    # 4. Logika Tampilan (Render UI)
     # 4. Logika Tampilan (Render UI)
     if not data_valid:
         # Jika belum ada file atau file salah, tampilkan panduan & template
