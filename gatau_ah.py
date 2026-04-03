@@ -29,8 +29,6 @@ def init_supabase() -> Client:
 supabase = init_supabase()
 
 # ==================== FUNGSI BACA DB ====================
-# ==================== FUNGSI BACA DB ====================
-# ==================== FUNGSI BACA DB ====================
 def get_sync_start_date(): 
     """Membaca tanggal update terakhir dari tiap instrumen/tabel utama, lalu mengambil tanggal yang paling tertinggal."""
     dates = []
@@ -142,7 +140,7 @@ def run_daily_sync(start_date, end_date):
         payload = df_clean.to_dict(orient='records')
         for i in range(0, len(payload), 1000):
             try: supabase.table(table_name).upsert(payload[i:i+1000]).execute()
-            except: pass
+            except Exception as e: st.warning(f"Gagal sync batch {i}: {e}")
 
     mf_master, bond_master, macro_master = load_master_instruments()
 
@@ -152,7 +150,8 @@ def run_daily_sync(start_date, end_date):
         try:
             df_mf = rd.get_data(universe=tickers_mf[i:i+15], fields=['TR.NETASSETVAL.date', 'TR.NETASSETVAL'], parameters=params)
             process_and_upload(df_mf, "mf_nav_daily", ["nav"], {'Instrument': 'ticker', 'Date': 'date', 'TR.NETASSETVAL.date': 'date', 'TR.NETASSETVAL': 'nav', 'Net Asset Value': 'nav'})
-        except: pass
+        except Exception as e:
+            st.warning(f"Gagal sync Reksa Dana batch {i}: {e}")
 
     # 2. Sync Obligasi
     tickers_bonds = [x['isin_code'] for x in bond_master]
@@ -161,7 +160,8 @@ def run_daily_sync(start_date, end_date):
             df_bonds = rd.get_data(universe=tickers_bonds[i:i+20], fields=['TR.ASKPRICE.date', 'TR.ASKPRICE', 'TR.ASKYIELD'], parameters=params)
             mapping_bonds = {'Instrument': 'isin_code', 'Date': 'date', 'Ask Price': 'ask_price', 'Ask Yield': 'ask_yield', 'TR.ASKPRICE.date': 'date', 'TR.ASKPRICE': 'ask_price', 'TR.ASKYIELD': 'ask_yield'}
             process_and_upload(df_bonds, "gov_bonds_prices_daily", ["ask_price", "ask_yield"], mapping_bonds)
-        except: pass
+        except Exception as e:
+            st.warning(f"Gagal sync Obligasi batch {i}: {e}")
         
     # (Untuk Macro di run_daily_sync tetap sama seperti kode sebelumnya, cukup gunakan macro_master)
 
@@ -312,6 +312,7 @@ def load_all_data(start_date, end_date, currency='IDR'):
     }, start_date, end_date
 
 # ==================== FUNGSI UNTUK MENGHITUNG METRIK DAN SKOR ====================
+@st.cache_data(ttl=3600, show_spinner="Menghitung Metrik Finansial...")
 def calculate_metrics(price_data, benchmark_series, risk_free_rate, eval_window=None):
     price_data = price_data.dropna(axis=1, how='all')
     price_data = price_data.ffill().bfill()
@@ -346,7 +347,8 @@ def calculate_metrics(price_data, benchmark_series, risk_free_rate, eval_window=
     
     # days_risk sekarang secara dinamis menjadi 22, 63, 126, atau 252 sesuai pilihan interval Anda
     days_risk = len(price_data_risk) 
-    annualization_factor = 252 / days_risk if days_risk > 0 else 1
+    days = (price_data_risk.index[-1] - price_data_risk.index[0]).days
+    annualization_factor = 252 / days * len(returns_risk)
     
     risk_period_return = (price_data_risk.iloc[-1] / price_data_risk.iloc[0]) - 1 if days_risk > 0 else 0
     annualized_return = ((1 + risk_period_return) ** annualization_factor) - 1
@@ -355,13 +357,14 @@ def calculate_metrics(price_data, benchmark_series, risk_free_rate, eval_window=
     volatility_1sd = returns_risk.std() * np.sqrt(252)
     
     excess_return = annualized_return - risk_free_rate
-    sharpe_ratio = excess_return / volatility_1sd 
+    mean_return = returns_risk.mean() * 252
+    sharpe_ratio = (mean_return - risk_free_rate) / volatility_1sd.replace(0, np.nan)
 
     beta = pd.Series([np.nan] * len(returns_risk.columns), index=returns_risk.columns)
     alpha = pd.Series([np.nan] * len(returns_risk.columns), index=returns_risk.columns)
     
     if not bench_returns_risk.empty:
-        combined_returns = pd.concat([returns_risk, bench_returns_risk.rename('MARKET')], axis=1)
+        combined_returns = pd.concat([returns_risk, bench_returns_risk.rename('MARKET')], axis=1).dropna()
         cov_matrix = combined_returns.cov()
         var_market = cov_matrix.loc['MARKET', 'MARKET']
         
@@ -371,14 +374,16 @@ def calculate_metrics(price_data, benchmark_series, risk_free_rate, eval_window=
                     beta[col] = cov_matrix.loc['MARKET', col] / var_market
 
         combined_prices = pd.concat([price_data_risk, bench_risk.rename('MARKET')], axis=1).ffill().bfill()
-        if 'MARKET' in combined_prices.columns and len(combined_prices) > 0:
-            market_return = (combined_prices['MARKET'].iloc[-1] / combined_prices['MARKET'].iloc[0]) - 1
-            ann_market_return = ((1 + market_return) ** annualization_factor) - 1
-        else:
-            ann_market_return = 0
+        # if 'MARKET' in combined_prices.columns and len(combined_prices) > 0:
+        #     market_return = (combined_prices['MARKET'].iloc[-1] / combined_prices['MARKET'].iloc[0]) - 1
+        #     ann_market_return = ((1 + market_return) ** annualization_factor) - 1
+        # else:
+        #     ann_market_return = 0
             
-        expected_return = risk_free_rate + beta * (ann_market_return - risk_free_rate)
-        alpha = annualized_return - expected_return
+        market_mean_return = bench_returns_risk.mean() * 252
+        expected_return = risk_free_rate + beta * (market_mean_return - risk_free_rate)
+        mean_return = returns_risk.mean() * 252
+        alpha = mean_return - expected_return
 
     # Pastikan semua metrik masuk ke DataFrame utama
     metrics_df = pd.DataFrame({
@@ -527,6 +532,7 @@ def calculate_metrics(price_data, benchmark_series, risk_free_rate, eval_window=
     
     return metrics_df
 
+@st.cache_data(ttl=3600, show_spinner="Menghitung Time-Series Metrik...")
 def calculate_rolling_timeseries(price_data, benchmark_series, risk_free_rate, window=63):
     returns = price_data.pct_change().dropna(how='all')
     bench_returns = benchmark_series.pct_change().dropna()
@@ -559,6 +565,7 @@ def calculate_rolling_timeseries(price_data, benchmark_series, risk_free_rate, w
         'Volatility': volatility_ts
     }
 
+@st.cache_data(ttl=3600, show_spinner="Kalkulasi Skor Komposit...")
 def calculate_ranking_scores(metrics_df, weights=None):
     """Menghitung skor komposit dari 25 metrik (termasuk 4 metrik momentum perpindahan peringkat)."""
     # Bobot disebar rata ke 25 metrik (1/25 atau ~4.16% per metrik)
@@ -627,6 +634,7 @@ def get_7d_ranking_history(price_data, benchmark_series, risk_free_rate, eval_wi
                 
     return pd.DataFrame(history_ranks)
 
+@st.cache_data(ttl=3600, show_spinner="Menghitung History Ranking...")
 def get_detailed_ranking_history(price_data_full, benchmark_series_full, risk_free_rate, metric_window, num_columns=10, custom_weights=None, trading_days_interval=1):
     """Menghitung history ranking komposit dengan lompatan akurat berbasis Index Array (Trading Days)"""
     if len(price_data_full) < 1:
@@ -715,6 +723,8 @@ def get_monthly_rankings(price_data, benchmark_series, risk_free_rate):
     rank_two_months_ago = get_rank_at_date(two_months_start - pd.Timedelta(days=1))
     
     return rank_last_month, rank_two_months_ago
+
+@st.cache_data(ttl=3600, show_spinner="Menghitung Peringkat Performa Periodik...")
 def get_period_performance_ranking(price_data, trading_days_interval=5, num_periods=10):
     """Menghitung peringkat return absolut melompat secara presisi mengikuti Trading Days"""
     if price_data.empty or len(price_data) < 2: 
@@ -767,9 +777,9 @@ def calculate_daily_leaderboard(price_data, days=5):
     yesterday_date = price_data.index[-2]
 
     # Mundur persis 'days' kalender absolut (misal 5 hari kalender)
-    target_N_days_ago = today_date - pd.Timedelta(days=days)
+    
+    target_N_days_ago = today_date - pd.Timedelta.shift(days=days)
     target_N_plus_1_days_ago = yesterday_date - pd.Timedelta(days=days)
-
     # Cari indeks baris untuk tanggal hari ini dan kemarin
     idx_today = price_data.index.get_loc(today_date)
     idx_yesterday = price_data.index.get_loc(yesterday_date)
@@ -791,8 +801,8 @@ def calculate_daily_leaderboard(price_data, days=5):
     price_N_plus_1_ago = price_data.iloc[idx_N_plus_1_ago].replace(0, np.nan)
 
     # Hitung return point-to-point
-    returns_today = (price_today / price_N_ago) - 1
-    returns_yesterday = (price_yesterday / price_N_plus_1_ago) - 1
+    returns_today = (price_data.iloc[-1] / price_data.iloc[-1 - days]) - 1
+    returns_yesterday = (price_data.iloc[-2] / price_data.iloc[-2 - days]) - 1
 
     # Format dataframe hari ini
     col_return_name = f'Return_{days}d'
@@ -840,7 +850,6 @@ def get_global_cache_registry():
 global_cache = get_global_cache_registry()
 
 # ==================== INISIALISASI SESSION STATE ====================
-# ==================== INISIALISASI SESSION STATE ====================
 if 'connected' not in st.session_state:
     st.session_state.connected = False
 
@@ -848,9 +857,6 @@ if 'connected' not in st.session_state:
 default_end_date = dt.datetime.today().date()
 # UBAH: Mundur 20 tahun (365 * 20) agar rentang memori menampung data tua untuk deteksi umur
 default_start_date = default_end_date - dt.timedelta(days=365 * 20)
-
-if 'fund_currency' not in st.session_state:
-    st.session_state.fund_currency = 'IDR'
 
 if 'fund_currency' not in st.session_state:
     st.session_state.fund_currency = 'IDR'
@@ -1154,10 +1160,6 @@ young_equities = get_young_funds(df_equity_full)
 young_bonds = get_young_funds(df_bond_full)
 young_all = young_equities + young_bonds
 
-young_equities = get_young_funds(df_equity_full)
-young_bonds = get_young_funds(df_bond_full)
-young_all = young_equities + young_bonds
-
 # ==================== EKSTRAK BENCHMARK SERIES ====================
 def get_benchmark_series(ticker, dfs_dict):
     for df in dfs_dict.values():
@@ -1196,7 +1198,7 @@ df_index = safe_slice(df_index_full, ana_start_dt, ana_end_dt)
 df_komoditas = safe_slice(df_komoditas_full, ana_start_dt, ana_end_dt)
 df_mata_uang = safe_slice(df_mata_uang_full, ana_start_dt, ana_end_dt)
 df_suku_bunga = safe_slice(df_suku_bunga_full, ana_start_dt, ana_end_dt)
-# Ekstrak df_gov_bonds dari all_data
+
 # Ekstrak df_gov_bonds dari all_data
 df_gov_bonds_price_full = all_data.get('gov_bonds_price', pd.DataFrame())
 df_gov_bonds_yield_full = all_data.get('gov_bonds_yield', pd.DataFrame())
@@ -1222,7 +1224,6 @@ benchmark_series_sliced = safe_slice(benchmark_series_full, ana_start_dt, ana_en
 
 df_all_instruments_full = ensure_unique_columns(pd.concat([df_equity_full, df_bond_full], axis=1))
 
-# --- Tentukan Jendela Evaluasi (Window) berdasarkan Interval ---
 # --- Tentukan Jendela Evaluasi (Window) berdasarkan Interval ---
 if date_option == "1 Bulan":
     cutoff_days = 22
@@ -1253,9 +1254,6 @@ if not df_equity.empty:
 metrics_bond = None
 if not df_bond.empty:
     metrics_bond = calculate_metrics(df_bond, benchmark_series_sliced, risk_free_rate, eval_window=cutoff_days)
-
-# --- LOGIKA FILTER PEMBOBOTAN DINAMIS ---
-weights_dict = None  # Default (Balanced = dibagi rata 1/25)
 
 # --- LOGIKA FILTER PEMBOBOTAN DINAMIS ---
 weights_dict = None  # Default (Balanced = dibagi rata 1/25)
@@ -1765,8 +1763,6 @@ with tab_performance:
                 
         final_format = {k: v for k, v in cols_to_format.items() if k in full_performance_display.columns}
         
-        final_format = {k: v for k, v in cols_to_format.items() if k in full_performance_display.columns}
-        
         # --- HIGHLIGHT KUNING UNTUK REKSA DANA MUDA DI TABEL SKOR ---
         def highlight_perf_young(row):
             # Cek apakah nama index (nama produk) masuk daftar young_all
@@ -2240,9 +2236,7 @@ with tab_recommendation:
                 if 'StdDev' in df_fund.columns: df_fund['Rank_StdDev'] = df_fund['StdDev'].rank(ascending=True, method='min')
                 
                 rank_cols = [c for c in df_fund.columns if c.startswith('Rank_')]
-                
-                rank_cols = [c for c in df_fund.columns if c.startswith('Rank_')]
-                
+ 
                 if rank_cols:
                     # Hitung Skor Akhir (Rata-rata peringkat)
                     df_fund['Total_Score'] = df_fund[rank_cols].mean(axis=1)
