@@ -7,26 +7,102 @@ from plotly.subplots import make_subplots
 import datetime as dt
 import refinitiv.data as rd
 import time
+# ... (import Anda yang lain) ...
+from supabase import create_client, Client
+
+# ==================== KONEKSI SUPABASE ====================
+@st.cache_resource
+def init_supabase() -> Client:
+    """Membangun koneksi ke database Supabase secara global."""
+    try:
+        url: str = st.secrets["supabase"]["url"]
+        key: str = st.secrets["supabase"]["key"]
+        return create_client(url, key)
+    except KeyError as e:
+        st.error(f"❌ Kredensial Supabase tidak ditemukan di secrets.toml: missing {e}")
+        st.stop()
+    except Exception as e:
+        st.error(f"❌ Gagal menginisialisasi klien Supabase: {e}")
+        st.stop()
+
+# Eksekusi pembuatan klien dan simpan di memori global
+supabase = init_supabase()
+
+# ==================== FUNGSI BACA DB ====================
+# ==================== FUNGSI BACA DB ====================
+# ==================== FUNGSI BACA DB ====================
+def get_sync_start_date(): 
+    """Membaca tanggal update terakhir dari tiap instrumen/tabel utama, lalu mengambil tanggal yang paling tertinggal."""
+    dates = []
+    tables = ["mf_nav_daily", "gov_bonds_prices_daily", "macro_daily"]
+    
+    for table in tables:
+        try:
+            response = supabase.table(table).select("date").order("date", desc=True).limit(1).execute()
+            if response.data:
+                dates.append(pd.to_datetime(response.data[0]['date']).date())
+        except Exception:
+            pass 
+            
+    if dates:
+        # Ambil tanggal yang paling lama (paling tertinggal) dari tanggal-tanggal update terakhir
+        return min(dates)
+    return dt.datetime.today().date() - dt.timedelta(days=30)
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def load_master_instruments():
+    """Mengambil Master Data murni dari Database"""
+    mf_data = supabase.table("mf_instruments").select("*").execute().data
+    bond_data = supabase.table("gov_bonds_instruments").select("*").execute().data
+    macro_data = supabase.table("macro_instruments").select("*").execute().data
+    return mf_data, bond_data, macro_data
+
+def fetch_from_supabase(table_name, id_col, tickers, start_date, end_date):
+    """Fungsi pembantu untuk menarik data masif dari Supabase dengan Pagination & Ordering."""
+    if not tickers: return pd.DataFrame()
+    
+    start_str = start_date.strftime('%Y-%m-%d')
+    end_str = end_date.strftime('%Y-%m-%d')
+    
+    all_data = []
+    page_size = 1000
+    offset = 0
+    
+    while True:
+        try:
+            res = supabase.table(table_name).select("*") \
+                .in_(id_col, tickers) \
+                .gte('date', start_str) \
+                .lte('date', end_str) \
+                .order('date') \
+                .range(offset, offset + page_size - 1) \
+                .execute()
+                
+            if not res.data:
+                break
+                
+            all_data.extend(res.data)
+            
+            if len(res.data) < page_size:
+                break 
+                
+            offset += page_size
+        except Exception as e:
+            st.error(f"Error fetching from {table_name}: {e}")
+            break
+            
+    if not all_data: return pd.DataFrame()
+    
+    df = pd.DataFrame(all_data)
+    # HAPUS .dt.date agar menjadi DatetimeIndex murni Pandas
+    df['Date'] = pd.to_datetime(df['date']) 
+    return df
 
 # ==================== FUNGSI INISIALISASI SESI REFINITIV ====================
-def init_refinitiv_session(currency='IDR'):
-    """
-    Membuka sesi Refinitiv Platform menggunakan kredensial dari st.secrets.
-    Parameter currency digunakan untuk memilih risk‑free rate yang sesuai.
-    """
+def init_refinitiv_session():
+    """Hanya membuka sesi Refinitiv tanpa menarik data RFR awal."""
     try:
-        if "refinitiv" not in st.secrets:
-            st.error("❌ Konfigurasi Refinitiv tidak ditemukan di secrets.")
-            return False
-
         config = st.secrets["refinitiv"]
-        required_keys = ["app_key", "username", "password"]
-        missing = [k for k in required_keys if k not in config]
-        if missing:
-            st.error(f"❌ Secrets Refinitiv tidak lengkap. Butuh: {', '.join(missing)}")
-            return False
-
-        # Definisikan sesi platform secara spesifik untuk kredensial dinamis
         session = rd.session.platform.Definition(
             app_key=config["app_key"],
             grant=rd.session.platform.GrantPassword(
@@ -35,31 +111,118 @@ def init_refinitiv_session(currency='IDR'):
             )
         ).get_session()
         
-        # Buka sesi dan tetapkan sebagai default untuk penarikan data selanjutnya
         session.open()
         rd.session.set_default(session)
-        
-        # Ambil risk‑free rate berdasarkan currency
-        # Ambil risk‑free rate berdasarkan currency
-         # Ambil risk‑free rate berdasarkan currency
-        try:
-            if currency == 'USD':
-                rf_ticker = 'US10YT=RR'
-            else:
-                rf_ticker = 'ID10YT=RR'
-                
-            # Gunakan get_history seperti di gatau_ah.py
-            df_rf = rd.get_history(universe=[rf_ticker], fields=['TR.BIDYIELD'])
-            if not df_rf.empty:
-                st.session_state.risk_free_rate = float(df_rf['Bid Yield'].iloc[0]) / 100
-                st.info(f"Risk Free Rate ({'USD' if currency=='USD' else 'IDR'}) terbaru: {st.session_state.risk_free_rate*100:.4f}%")
-        except Exception as e:
-            st.warning(f"Gagal menarik Risk Free Rate terbaru: {e}. Menggunakan nilai default.")
         return True
     except Exception as e:
         st.error(f"❌ Gagal membuka sesi Refinitiv: {e}")
         return False
 
+# ==================== FUNGSI DELTA SYNC (SINKRONISASI HARIAN) ====================
+def run_daily_sync(start_date, end_date):
+    """Menarik delta data dari Refinitiv dan mengirimnya ke Supabase."""
+    start_str = start_date.strftime('%Y-%m-%d')
+    end_str = end_date.strftime('%Y-%m-%d')
+    params = {'SDate': start_str, 'EDate': end_str, 'Frq': 'D'}
+    
+    def process_and_upload(df_raw, table_name, value_cols, rename_mapping):
+        if df_raw is None or df_raw.empty: return
+        df_raw = df_raw.loc[:, ~df_raw.columns.duplicated()]
+        df_clean = df_raw.rename(columns=rename_mapping)
+        if 'date' not in df_clean.columns: return
+        existing_val_cols = [col for col in value_cols if col in df_clean.columns]
+        if not existing_val_cols: return
+        df_clean[existing_val_cols] = df_clean[existing_val_cols].replace(r'^\s*$', np.nan, regex=True)
+        df_clean = df_clean.dropna(subset=['date', existing_val_cols[0]]) 
+        if df_clean.empty: return
+        df_clean['date'] = pd.to_datetime(df_clean['date']).dt.strftime('%Y-%m-%d')
+        id_col = 'isin_code' if 'isin_code' in df_clean.columns else 'ticker'
+        df_clean = df_clean.drop_duplicates(subset=[id_col, 'date'], keep='last')
+        df_clean = df_clean.astype(object).where(pd.notnull(df_clean), None)
+        payload = df_clean.to_dict(orient='records')
+        for i in range(0, len(payload), 1000):
+            try: supabase.table(table_name).upsert(payload[i:i+1000]).execute()
+            except: pass
+
+    mf_master, bond_master, macro_master = load_master_instruments()
+
+    # 1. Sync Reksa Dana
+    tickers_mf = [x['ticker'] for x in mf_master]
+    for i in range(0, len(tickers_mf), 15):
+        try:
+            df_mf = rd.get_data(universe=tickers_mf[i:i+15], fields=['TR.NETASSETVAL.date', 'TR.NETASSETVAL'], parameters=params)
+            process_and_upload(df_mf, "mf_nav_daily", ["nav"], {'Instrument': 'ticker', 'Date': 'date', 'TR.NETASSETVAL.date': 'date', 'TR.NETASSETVAL': 'nav', 'Net Asset Value': 'nav'})
+        except: pass
+
+    # 2. Sync Obligasi
+    tickers_bonds = [x['isin_code'] for x in bond_master]
+    for i in range(0, len(tickers_bonds), 20):
+        try:
+            df_bonds = rd.get_data(universe=tickers_bonds[i:i+20], fields=['TR.ASKPRICE.date', 'TR.ASKPRICE', 'TR.ASKYIELD'], parameters=params)
+            mapping_bonds = {'Instrument': 'isin_code', 'Date': 'date', 'Ask Price': 'ask_price', 'Ask Yield': 'ask_yield', 'TR.ASKPRICE.date': 'date', 'TR.ASKPRICE': 'ask_price', 'TR.ASKYIELD': 'ask_yield'}
+            process_and_upload(df_bonds, "gov_bonds_prices_daily", ["ask_price", "ask_yield"], mapping_bonds)
+        except: pass
+        
+    # (Untuk Macro di run_daily_sync tetap sama seperti kode sebelumnya, cukup gunakan macro_master)
+
+    # 3. Sync Makro Gabungan
+    macro_configs = [
+        (['.JKSE', '.JKLQ45', '.JKIDX30', '.JKIDX80', '.IXIC', '.SPX', '.DXY', '.SSEC'], ['TR.PriceClose.date', 'TR.PriceClose']),
+        (['ID10YT=RR', 'US10YT=RR'], ['TR.ClosePrice.date', 'TR.ClosePrice']),
+        (['IDR='], ['TR.AmericaCloseBidPrice.date', 'TR.AmericaCloseBidPrice']),
+        (['CLc1'], ['TR.cLOSEPrice.date', 'TR.ClosePrice'])
+    ]
+    for tickers, fields in macro_configs:
+        try:
+            df_mac = rd.get_data(universe=tickers, fields=fields, parameters=params)
+            mapping_mac = {'Instrument': 'ticker', 'Date': 'date', fields[0]: 'date', fields[1]: 'value', 'Price Close': 'value', 'TR.PriceClose': 'value', 'Close Price': 'value', 'TR.ClosePrice': 'value', 'America Close Bid Price': 'value', 'America  Close Bid Price': 'value', 'cLOSE Price': 'value', 'TR.AmericaCloseBidPrice': 'value'}
+            process_and_upload(df_mac, "macro_daily", ["value"], mapping_mac)
+        except: pass
+  
+def backfill_new_instrument(table_dest, id_col, ticker, fields, value_cols, rename_mapping):
+    """Fungsi mandiri untuk menarik data 25 tahun ke belakang (2000-01-01) untuk 1 instrumen baru"""
+    start_str = "2000-01-01"
+    end_str = dt.datetime.today().strftime('%Y-%m-%d')
+    params = {'SDate': start_str, 'EDate': end_str, 'Frq': 'D'}
+    
+    try:
+        df_raw = rd.get_data(universe=[ticker], fields=fields, parameters=params)
+    except Exception as e:
+        st.error(f"❌ Refinitiv Error: {e}")
+        return False
+
+    if df_raw is None or df_raw.empty:
+        st.warning("Data historis tidak ditemukan di Refinitiv.")
+        return False
+
+    # Pembersihan Data
+    df_raw = df_raw.loc[:, ~df_raw.columns.duplicated()]
+    df_clean = df_raw.rename(columns=rename_mapping)
+    
+    if 'date' not in df_clean.columns: return False
+    existing_val_cols = [col for col in value_cols if col in df_clean.columns]
+    if not existing_val_cols: return False
+    
+    df_clean[existing_val_cols] = df_clean[existing_val_cols].replace(r'^\s*$', np.nan, regex=True)
+    df_clean = df_clean.dropna(subset=['date', existing_val_cols[0]]) 
+    if df_clean.empty: return False
+    
+    df_clean['date'] = pd.to_datetime(df_clean['date']).dt.strftime('%Y-%m-%d')
+    id_mapped = 'isin_code' if id_col == 'isin_code' else 'ticker'
+    df_clean = df_clean.drop_duplicates(subset=[id_mapped, 'date'], keep='last')
+    df_clean = df_clean.astype(object).where(pd.notnull(df_clean), None)
+    
+    payload = df_clean.to_dict(orient='records')
+    
+    # Upload ke Supabase dalam batch 1000
+    for i in range(0, len(payload), 1000):
+        try:
+            supabase.table(table_dest).upsert(payload[i:i+1000]).execute()
+        except Exception as e:
+            st.error(f"DB Error: {e}")
+            return False
+            
+    return True  
 # ==================== KONFIGURASI HALAMAN ====================
 st.set_page_config(
     page_title="Investment Dashboard - Reksa Dana Indonesia",
@@ -68,241 +231,85 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# ==================== DAFTAR TICKER DEFAULT (GLOBAL) ====================
-# 1. IDR Equity
-default_tickers_equity_idr = [
-    'LP68059065', 'LP68452242', 'LP68199650', 'LP68199651', 'LP68683420',
-    'LP60090155', 'LP65023619', 'LP68684585', 'LP68790535', 'LP63505420',
-    'LP65023683', 'LP63505451', 'LP65077719', 'LP65108951', 'LP63505436',
-    'LP68042752', 'LP68166624', 'LP68692654', 'LP68219216', 'LP63505478',
-    'LP65077766', 'LP65034334', 'LP68852202', 'LP68794971', 'LP68047313',
-    'LP63500685', 'LP63505555', 'LP63505558', 'LP63505427'
-]
-default_map_equity_idr = {
-    'LP68059065': 'Allianz Alpha Sector Rotation Kelas A', 'LP68452242': 'Allianz SRI-Kehati Index',
-    'LP68199650': 'Ashmore Dana Ekuitas Nusantara', 'LP68199651': 'Ashmore Dana Progresif Nusantara',
-    'LP68683420': 'Ashmore Digital Equity Sustainable', 'LP60090155': 'Batavia Dana Saham',
-    'LP65023619': 'Batavia Dana Saham Optimal', 'LP68684585': 'Batavia Disruptive Equity',
-    'LP68790535': 'Batavia Index Pefindo I Grade', 'LP63505420': 'BNP Paribas Ekuitas',
-    'LP65023683': 'BNP Paribas Infrastruktur Plus', 'LP63505451': 'BNP Paribas Pesona',
-    'LP65077719': 'BNP Paribas Pesona Syariah', 'LP65108951': 'BNP Paribas Solaris',
-    'LP63505436': 'BRI Mawar', 'LP68042752': 'BRI Mawar Fokus 10',
-    'LP68166624': 'Eastspring Investments Alpha Navigator Kelas A', 'LP68692654': 'Eastspring IDX ESG Leaders Plus Kelas A',
-    'LP68219216': 'Mandiri Investa Equity ASEAN 5 Plus', 'LP63505478': 'Manulife Dana Saham Kelas A',
-    'LP65077766': 'Manulife Saham Andalan', 'LP65034334': 'Maybank Dana Ekuitas',
-    'LP68852202': 'Maybank Financial Infobank15 Index Kelas C', 'LP68794971': 'Maybank Financial Infobank15 Index Kelas N',
-    'LP68047313': 'Schroder 90 Plus Equity', 'LP63500685': 'Schroder Dana Istimewa',
-    'LP63505555': 'Schroder Dana Prestasi', 'LP63505558': 'Schroder Dana Prestasi Plus', 'LP63505427': 'TRIM Kapital'
-}
-
-# 2. USD Equity
-default_tickers_equity_usd = [
-    'LP68783082', 'LP68316907', 'LP68640621', 'LP68819234', 'LP68697607',
-    'LP68357499', 'LP68657110', 'LP68591441', 'LP68584853', 'LP68611334',
-    'LP68383041', 'LP68129672', 'LP68357264', 'LP68582636', 'LP68358633'
-]
-default_map_equity_usd = {
-    'LP68783082': 'Allianz High Dividend Global Sharia Equity DollarA', 'LP68316907': 'Ashmore Dana USD Equity Nusantara',
-    'LP68640621': 'Batavia Global ESG Sharia Equity USD', 'LP68819234': 'Batavia India Sharia Equity USD',
-    'LP68697607': 'Batavia Technology Sharia Equity USD', 'LP68357499': 'BNP Paribas Cakra Syariah USD RK1',
-    'LP68657110': 'BNP Paribas DJIM Glbl Techno Titans 50 Syariah USD', 'LP68591441': 'BNP Paribas Greater China Equity Syariah USD RK1',
-    'LP68584853': 'BRI G20 Sharia Equity Dollar', 'LP68611334': 'Eastspring Syariah Greater China Equity USD A',
-    'LP68383041': 'Mandiri Global Sharia Equity Dollar Kelas A', 'LP68129672': 'Manulife Greater Indonesia',
-    'LP68357264': 'Manulife Saham Syariah Asia Pasifik Dollar AS', 'LP68582636': 'Manulife Saham Syariah Global Dividen Dolar AS(A3)',
-    'LP68358633': 'Schroder Global Sharia Equity (USD)'
-}
-
-# 3. IDR Fixed Income
-default_tickers_bond_idr = [
-    'LP68209699', 'LP68455734', 'LP65023681', 'LP68505148', 'LP65077754',
-    'LP68190879', 'LP68213698', 'LP65077739', 'LP65077899', 'LP63505468',
-    'LP65077900', 'LP68626953', 'LP65108953', 'LP68784787', 'LP65077841',
-    'LP65023680', 'LP68553197'
-]
-default_map_bond_idr = {
-    'LP68209699': 'Ashmore Dana Obligasi Nusantara Kelas A', 'LP68455734': 'Ashmore Dana Obligasi Unggulan Nusantara Kelas A',
-    'LP65023681': 'Batavia Dana Obligasi Ultima', 'LP68505148': 'BNP Paribas Obligasi Cemerlang',
-    'LP65077754': 'BNP Paribas Prima II kelas RK1', 'LP68190879': 'Eastspring Investments IDR High Grade Kelas A',
-    'LP68213698': 'Eastspring Investments Yield Discovery Kelas A', 'LP65077739': 'Mandiri Investa Dana Utama Kelas A',
-    'LP65077899': 'Manulife Obligasi Negara Indonesia II Kelas A', 'LP63505468': 'Manulife Obligasi Unggulan Kelas A',
-    'LP65077900': 'Manulife Pendapatan Bulanan II', 'LP68626953': 'Maybank Dana Obligasi Negara',
-    'LP65108953': 'Maybank Dana Pasti 2', 'LP68784787': 'Maybank Obligasi Syariah Negara',
-    'LP65077841': 'Schroder Dana Andalan II', 'LP65023680': 'Schroder Dana Mantap Plus II', 'LP68553197': 'Trimegah Fixed Income Plan'
-}
-
-# 4. USD Fixed Income
-default_tickers_bond_usd = [
-    'LP68058109', 'LP65034330', 'LP68653335', 'LP65108964', 'LP68219210', 'LP65077741'
-]
-default_map_bond_usd = {
-    'LP68058109': 'BNP Paribas Prima USD Kelas RK1', 'LP65034330': 'BRI Melati Premium Dollar',
-    'LP68653335': 'Eastspring Syariah Fixed Income USD - Kelas A', 'LP65108964': 'Investa Dana Dollar Mandiri Kelas A',
-    'LP68219210': 'Manulife USD Fixed Income Kelas A', 'LP65077741': 'Schroder USD Bond Class A'
-}
-
-# ==================== FUNGSI HELPER UNTUK LOADING DATA ====================
+# ==================== FUNGSI HELPER UNTUK LOADING DATA (DB ONLY) ====================
 @st.cache_data(ttl=43200, show_spinner=False)
-def load_all_data(start_date, end_date, currency='IDR', custom_equity_tuple=None, custom_bond_tuple=None):
-    START_DATE_STR = start_date.strftime('%Y-%m-%d')
-    END_DATE_STR = end_date.strftime('%Y-%m-%d')
-    FREQ = 'D'
-
-    if currency == 'USD':
-        tickers_equity = default_tickers_equity_usd.copy()
-        map_ticker_equity = default_map_equity_usd.copy()
-        tickers_bond = default_tickers_bond_usd.copy()
-        map_ticker_bond = default_map_bond_usd.copy()
-        additional_index_tickers = ['.IXIC', '.SPX', '.DXY', '.SSEC']
-    else:
-        tickers_equity = default_tickers_equity_idr.copy()
-        map_ticker_equity = default_map_equity_idr.copy()
-        tickers_bond = default_tickers_bond_idr.copy()
-        map_ticker_bond = default_map_bond_idr.copy()
-        additional_index_tickers = []
-
-    if currency == 'IDR' and custom_equity_tuple:
-        for ticker, name in dict(custom_equity_tuple).items():
-            if ticker not in tickers_equity:
-                tickers_equity.append(ticker)
-                map_ticker_equity[ticker] = name
-                
-    if currency == 'IDR' and custom_bond_tuple:
-        for ticker, name in dict(custom_bond_tuple).items():
-            if ticker not in tickers_bond:
-                tickers_bond.append(ticker)
-                map_ticker_bond[ticker] = name
-
-    tickers_index_saham = ['.JKSE', '.JKLQ45', '.JKIDX80', '.JKIDX30'] + additional_index_tickers
-    tickers_suku_bunga = ['ID10YT=RR', 'US10YT=RR']
-    tickers_mata_uang = ['IDR=']
-    tickers_komoditas = ['CLc1']
-
-    # --- Fungsi Ekstraksi dengan batching dan retry ---
-    def fetch_and_clean_data(ticker_list, field, params, name="Data", batch_size=5, max_retries=3):
-        if not ticker_list: return pd.DataFrame()
-        
-        all_dfs = []
-        
-        for i in range(0, len(ticker_list), batch_size):
-            batch = ticker_list[i:i + batch_size]
-            success = False
-            
-            for attempt in range(max_retries):
-                try:
-                    if i > 0 and attempt == 0:
-                        time.sleep(1) 
-                        
-                    df_batch = rd.get_data(universe=batch, fields=field, parameters=params)
-                    
-                    if not df_batch.empty:
-                        all_dfs.append(df_batch)
-                    
-                    success = True
-                    break  # Keluar dari loop pengulangan kalau berhasil
-                    
-                except Exception as e:
-                    if attempt < max_retries - 1:
-                        time.sleep(2 ** (attempt + 1)) 
-                    else:
-                        st.warning(f"Gagal menarik sebagian {name} (Batch {i//batch_size + 1}) setelah {max_retries} percobaan. Error: {e}")
-            
-        if not all_dfs:
-            raise ValueError(f"{name} kosong dari API Refinitiv setelah semua percobaan gagal.")
-            
-        df = pd.concat(all_dfs, ignore_index=True)
-        
-        rename_map = {
-            'Net Asset Value': 'NAV',
-            'TR.NETASSETVAL': 'NAV',
-            'TR.NETASSETVAL.date': 'Date',
-            'Price Close': 'Price Close',
-            'TR.PriceClose': 'Price Close',
-            'TR.PriceClose.date': 'Date',
-            'Close Price': 'Close Price',
-            'TR.CLOSEPRICE': 'Close Price',
-            'TR.CLOSEPRICE.date': 'Date',
-            'Bid Yield': 'Bid Yield',
-            'TR.BIDYIELD': 'Bid Yield',
-            'TR.BIDYIELD.date': 'Date',
-            # Tambahan untuk Komoditas dan Mata Uang
-            'TR.SettlementPrice': 'Settlement Price',
-            'TR.SettlementPrice.date': 'Date',
-            'TR.SETTLEMENTPRICE': 'Settlement Price',
-            'TR.MidPrice': 'Mid Price',
-            'TR.MidPrice.date': 'Date',
-            'TR.MIDPRICE': 'Mid Price'
-        }
-        df = df.rename(columns=rename_map)
-        
-        df['Date'] = pd.to_datetime(df['Date'])
-        df = df.drop_duplicates(subset=['Instrument', 'Date'], keep='last')
-        return df
-
-    params = {'SDate': START_DATE_STR, 'EDate': END_DATE_STR, 'Frq': FREQ}
-
-    # Ekstrak Data
-   # Ekstrak Data dengan satu pintu fungsi yang tahan banting (ber-retry)
-    df_equity_raw = fetch_and_clean_data(tickers_equity, ['TR.NETASSETVAL.date', 'TR.NETASSETVAL'], params, "Equity")
-    df_bond_raw = fetch_and_clean_data(tickers_bond, ['TR.NETASSETVAL.date', 'TR.NETASSETVAL'], params, "Fixed Income")
-    df_index_raw = fetch_and_clean_data(tickers_index_saham, ['TR.PriceClose.date', 'TR.PriceClose'], params, "Indeks")
-    df_suku_bunga_raw = fetch_and_clean_data(tickers_suku_bunga, ['TR.BIDYIELD.date', 'TR.BIDYIELD'], params, "Suku Bunga")
-    df_mata_uang_raw = fetch_and_clean_data(tickers_mata_uang, ['TR.MidPrice.date', 'TR.MidPrice'], params, "Mata Uang")
-    df_komoditas_raw = fetch_and_clean_data(tickers_komoditas, ['TR.SettlementPrice.date', 'TR.SettlementPrice'], params, "Komoditas")
-
-    # --- Penyejajaran Data (Align) ---
-    if df_equity_raw.empty:
-        st.error("Data Equity kosong. Tidak dapat melanjutkan.")
-        st.stop()
+def load_all_data(start_date, end_date, currency='IDR'):
+    mf_master, bond_master, macro_master = load_master_instruments()
     
-    df_equity_pivot = df_equity_raw.pivot(index='Date', columns='Instrument', values='NAV')
-    master_dates = df_equity_pivot.dropna(how='all').index
+    # 1. Filter & Mapping Reksa Dana
+    mf_filtered = [x for x in mf_master if x['currency'] == currency]
+    tickers_equity = [x['ticker'] for x in mf_filtered if x['fund_type'] == 'Equity']
+    tickers_bond = [x['ticker'] for x in mf_filtered if x['fund_type'] == 'Fixed Income']
+    map_ticker_mf = {x['ticker']: x['name'] for x in mf_filtered}
+    
+    # 2. Filter & Mapping Obligasi Negara
+    bond_filtered = [x for x in bond_master if x['currency'] == currency]
+    tickers_gov_bonds = [x['isin_code'] for x in bond_filtered]
+    map_isin_bond = {x['isin_code']: x['name'] for x in bond_filtered}
+    
+    # 3. Filter & Mapping Makro (Langsung ambil semua tanpa filter currency)
+    tickers_index_saham = [x['ticker'] for x in macro_master if x['category'] == 'Index']
+    tickers_suku_bunga = [x['ticker'] for x in macro_master if x['category'] == 'Interest Rate']
+    tickers_mata_uang = [x['ticker'] for x in macro_master if x['category'] == 'Currency']
+    tickers_komoditas = [x['ticker'] for x in macro_master if x['category'] == 'Commodity']
+    tickers_macro = [x['ticker'] for x in macro_master]
 
-    def align_to_master(df_raw, master_dates, value_col_name):
-        if df_raw.empty:
-            return pd.DataFrame()
-        df_pivot = df_raw.pivot(index='Date', columns='Instrument', values=value_col_name)
-        df_aligned_pivot = df_pivot.reindex(master_dates).ffill()
-        df_aligned = df_aligned_pivot.reset_index().melt(
-            id_vars=['Date'], var_name='Instrument', value_name=value_col_name
-        ).dropna()
-        return df_aligned.sort_values(['Instrument', 'Date']).reset_index(drop=True)
+    # ==================== TARIK DARI SUPABASE ====================
+    df_mf_raw = fetch_from_supabase('mf_nav_daily', 'ticker', tickers_equity + tickers_bond, start_date, end_date)
+    df_gov_raw = fetch_from_supabase('gov_bonds_prices_daily', 'isin_code', tickers_gov_bonds, start_date, end_date)
+    df_macro_raw = fetch_from_supabase('macro_daily', 'ticker', tickers_macro, start_date, end_date)
 
-    df_equity_aligned = align_to_master(df_equity_raw, master_dates, 'NAV')
-    df_bond_aligned = align_to_master(df_bond_raw, master_dates, 'NAV')
-    df_index_aligned = align_to_master(df_index_raw, master_dates, 'Price Close')
-    df_suku_bunga_aligned = align_to_master(df_suku_bunga_raw, master_dates, 'Bid Yield')
-    df_mata_uang_aligned = align_to_master(df_mata_uang_raw, master_dates, 'Mid Price')    
-    df_komoditas_aligned = align_to_master(df_komoditas_raw, master_dates, 'Settlement Price')
+    def safe_pivot(df, id_col, val_col):
+        if df.empty: return pd.DataFrame()
+        df = df.drop_duplicates(subset=[id_col, 'Date'], keep='last')
+        return df.pivot(index='Date', columns=id_col, values=val_col).sort_index()
 
-    # --- Mapping Nama dan Pivot untuk Analisis ---
-    df_equity_aligned['Instrument'] = df_equity_aligned['Instrument'].map(map_ticker_equity)
-    df_bond_aligned['Instrument'] = df_bond_aligned['Instrument'].map(map_ticker_bond)
+    # Ekstrak Reksa Dana
+    df_equity_wide, df_bond_wide = pd.DataFrame(), pd.DataFrame()
+    if not df_mf_raw.empty:
+        df_equity_sub = df_mf_raw[df_mf_raw['ticker'].isin(tickers_equity)].copy()
+        df_bond_sub = df_mf_raw[df_mf_raw['ticker'].isin(tickers_bond)].copy()
+        
+        df_equity_sub['Instrument'] = df_equity_sub['ticker'].map(map_ticker_mf).fillna(df_equity_sub['ticker'])
+        df_bond_sub['Instrument'] = df_bond_sub['ticker'].map(map_ticker_mf).fillna(df_bond_sub['ticker'])
+        
+        df_equity_wide = safe_pivot(df_equity_sub, 'Instrument', 'nav')
+        df_bond_wide = safe_pivot(df_bond_sub, 'Instrument', 'nav')
 
-    def safe_pivot(df, val_col):
-        if df.empty or 'Date' not in df.columns:
-            return pd.DataFrame()
-        return df.pivot(index='Date', columns='Instrument', values=val_col).sort_index()
+    # Ekstrak Obligasi Negara
+    df_gov_bonds_price, df_gov_bonds_yield = pd.DataFrame(), pd.DataFrame()
+    if not df_gov_raw.empty:
+        df_gov_raw['Instrument'] = df_gov_raw['isin_code'].map(map_isin_bond).fillna(df_gov_raw['isin_code'])
+        df_gov_bonds_price = safe_pivot(df_gov_raw, 'Instrument', 'ask_price')
+        df_gov_bonds_yield = safe_pivot(df_gov_raw, 'Instrument', 'ask_yield')
 
-    df_equity_wide = safe_pivot(df_equity_aligned, 'NAV')
-    df_bond_wide = safe_pivot(df_bond_aligned, 'NAV')
-    df_index_wide = safe_pivot(df_index_aligned, 'Price Close')
-    df_suku_bunga_wide = safe_pivot(df_suku_bunga_aligned, 'Bid Yield')
-    df_mata_uang_wide = safe_pivot(df_mata_uang_aligned, 'Mid Price')
-    df_komoditas_wide = safe_pivot(df_komoditas_aligned, 'Settlement Price')
+    # Ekstrak Makro
+    df_index_wide, df_suku_bunga_wide, df_mata_uang_wide, df_komoditas_wide = pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+    if not df_macro_raw.empty:
+        df_idx_sub = df_macro_raw[df_macro_raw['ticker'].isin(tickers_index_saham)]
+        df_suku_sub = df_macro_raw[df_macro_raw['ticker'].isin(tickers_suku_bunga)]
+        df_uang_sub = df_macro_raw[df_macro_raw['ticker'].isin(tickers_mata_uang)]
+        df_komo_sub = df_macro_raw[df_macro_raw['ticker'].isin(tickers_komoditas)]
+        
+        df_index_wide = safe_pivot(df_idx_sub, 'ticker', 'value')
+        df_suku_bunga_wide = safe_pivot(df_suku_sub, 'ticker', 'value')
+        df_mata_uang_wide = safe_pivot(df_uang_sub, 'ticker', 'value')
+        df_komoditas_wide = safe_pivot(df_komo_sub, 'ticker', 'value')
 
-    # Gabungkan semua data untuk kemudahan akses
-    all_data = {
-        'equity': df_equity_wide,
-        'bond': df_bond_wide,
-        'index': df_index_wide,
-        'suku_bunga': df_suku_bunga_wide,
-        'mata_uang': df_mata_uang_wide,
-        'komoditas': df_komoditas_wide,
-    }
+    if df_equity_wide.empty:
+        st.error("Data Equity kosong di database untuk mata uang ini.")
+        st.stop()
 
-    return all_data, start_date, end_date
+    master_dates = df_equity_wide.index
+    def align_wide_df(df_wide):
+        return df_wide.reindex(master_dates).ffill() if not df_wide.empty else df_wide
 
-
+    return {
+        'equity': df_equity_wide, 'bond': align_wide_df(df_bond_wide),
+        'index': align_wide_df(df_index_wide), 'suku_bunga': align_wide_df(df_suku_bunga_wide),
+        'mata_uang': align_wide_df(df_mata_uang_wide), 'komoditas': align_wide_df(df_komoditas_wide),
+        'gov_bonds_price': align_wide_df(df_gov_bonds_price), 'gov_bonds_yield': align_wide_df(df_gov_bonds_yield)
+    }, start_date, end_date
 
 # ==================== FUNGSI UNTUK MENGHITUNG METRIK DAN SKOR ====================
 def calculate_metrics(price_data, benchmark_series, risk_free_rate, eval_window=None):
@@ -824,17 +831,46 @@ def validate_ticker(ticker, product_type):
     except:
         return False
 
+# ==================== GLOBAL CACHE REGISTRY ====================
+@st.cache_resource
+def get_global_cache_registry():
+    # Set ini bertahan secara global di server, tidak hilang saat refresh
+    return set()
+
+global_cache = get_global_cache_registry()
+
+# ==================== INISIALISASI SESSION STATE ====================
 # ==================== INISIALISASI SESSION STATE ====================
 if 'connected' not in st.session_state:
     st.session_state.connected = False
-if 'data_loaded' not in st.session_state:
-    st.session_state.data_loaded = False
+
+# 1. Tetapkan format tanggal default yang pasti sejak awal
+default_end_date = dt.datetime.today().date()
+# UBAH: Mundur 20 tahun (365 * 20) agar rentang memori menampung data tua untuk deteksi umur
+default_start_date = default_end_date - dt.timedelta(days=365 * 20)
+
 if 'fund_currency' not in st.session_state:
-    st.session_state.fund_currency = 'IDR'  # 'IDR' atau 'USD'
+    st.session_state.fund_currency = 'IDR'
+
+if 'fund_currency' not in st.session_state:
+    st.session_state.fund_currency = 'IDR'
 if 'start_date' not in st.session_state:
-    st.session_state.start_date = None
+    st.session_state.start_date = default_start_date
 if 'end_date' not in st.session_state:
-    st.session_state.end_date = dt.datetime.today()
+    st.session_state.end_date = default_end_date
+
+if 'gov_bonds_loaded' not in st.session_state:
+    st.session_state.gov_bonds_loaded = False
+
+# UBAH BLOK INI:
+if 'data_loaded' not in st.session_state:
+    st.session_state.data_loaded = True # Paksa menjadi True agar aplikasi langsung memuat
+        
+    # Cek cache sekunder (Obligasi Negara)
+    bonds_key = f"BONDS_{default_start_date.strftime('%Y-%m-%d')}_{default_end_date.strftime('%Y-%m-%d')}"
+    if bonds_key in global_cache:
+        st.session_state.gov_bonds_loaded = True
+
 if 'risk_free_rate' not in st.session_state:
     st.session_state.risk_free_rate = 0.065
 if 'selected_benchmark_ticker' not in st.session_state:
@@ -845,13 +881,11 @@ if 'custom_equity' not in st.session_state:
     st.session_state.custom_equity = {}
 if 'custom_bond' not in st.session_state:
     st.session_state.custom_bond = {}
-if 'cached_data_keys' not in st.session_state:
-    st.session_state.cached_data_keys = set()
     
 # ==================== SIDEBAR ====================
 with st.sidebar:
     st.title("⚙️ Pengaturan")
-    
+    st.sidebar.divider()
     # Pilihan mata uang reksa dana
     st.subheader("💱 Mata Uang Reksa Dana")
     new_currency = st.radio(
@@ -863,243 +897,228 @@ with st.sidebar:
     )
     if new_currency != st.session_state.fund_currency:
         st.session_state.fund_currency = new_currency
-        
-        # Cek apakah mata uang ini dengan tanggal aktif saat ini sudah pernah diekstrak
-        if st.session_state.start_date and st.session_state.end_date:
-            cache_key = f"{new_currency}_{st.session_state.start_date}_{st.session_state.end_date}"
-            if cache_key in st.session_state.cached_data_keys:
-                st.session_state.data_loaded = True  # Langsung buka dasbor jika ada di cache
-            else:
-                st.session_state.data_loaded = False # Minta ekstrak jika belum ada
-        else:
-            st.session_state.data_loaded = False
-            
-        st.rerun()
+        # HAPUS LOGIKA CACHE KEY DI SINI, CUKUP RERUN SAJA
+        st.rerun() # Ini akan membuat halaman reload dan load_all_data otomatis menyesuaikan
     
-    # Bagian Koneksi Refinitiv
-    st.subheader("🔌 Koneksi Refinitiv")
-    if st.button("Hubungkan ke Refinitiv Platform"):
-        with st.spinner("Menghubungkan..."):
-            if init_refinitiv_session(currency=st.session_state.fund_currency):
-                st.session_state.connected = True
-                st.success("Sesi Refinitiv berhasil dibuka!")
-            else:
-                st.session_state.connected = False
-
     st.divider()
-    
-    # Pilihan Rentang Waktu untuk Ekstraksi Data
-    st.subheader("📅 Tarik Data dari API")
-    
-    col_d1, col_d2 = st.columns(2)
-    with col_d1:
-        default_start = dt.datetime.today() - dt.timedelta(days=365)
-        input_start_date = st.date_input("Start Date", value=default_start, key="start_date_input")
-    with col_d2:
-        input_end_date = st.date_input("End Date", value=dt.datetime.today(), key="end_date_input")
 
-    # Tombol Muat Data
-    # Tombol Muat Data
-    if st.button("📥 Ekstrak Data", type="primary", disabled=not st.session_state.connected):
-        if input_start_date >= input_end_date:
-            st.error("Start Date harus lebih awal dari End Date!")
-        elif st.session_state.connected:
-            with st.spinner("Menarik data dari Refinitiv..."):
-                try:
-                    all_data, start_d, end_d = load_all_data(
-                        input_start_date, 
-                        input_end_date,
-                        currency=st.session_state.fund_currency,
-                        custom_equity_tuple=tuple(st.session_state.custom_equity.items()) if st.session_state.fund_currency == 'IDR' else None,
-                        custom_bond_tuple=tuple(st.session_state.custom_bond.items()) if st.session_state.fund_currency == 'IDR' else None
-                    ) 
-                    if all_data:
-                        st.session_state.start_date = start_d
+    # ==========================================
+    # BLOK SINKRONISASI UTAMA (DELTA LOAD)
+    # ==========================================
+    st.subheader("🔄 Sinkronisasi Data API")
+    st.caption("Tarik data yang tertinggal dari Refinitiv ke Database.")
+    if st.button("Sinkronisasi Refinitiv", type="primary", use_container_width=True):
+        with st.spinner("Mengecek instrumen yang tertinggal di database..."):
+            
+            start_d = get_sync_start_date() # Memakai logika cerdas baru
+            end_d = dt.datetime.today().date()
+            
+            if start_d >= end_d:
+                st.info("✅ Database sudah mutakhir (Hari ini).")
+                st.rerun()
+            else:
+                st.write(f"Menarik delta data: **{start_d.strftime('%d %b %Y')}** s/d **{end_d.strftime('%d %b %Y')}**")
+                
+                if init_refinitiv_session():
+                    try:
+                        run_daily_sync(start_d, end_d)
                         st.session_state.end_date = end_d
-                        st.session_state.data_loaded = True
                         
-                        # --- SISIPIKAN PENCATATAN CACHE DI SINI ---
-                        cache_key = f"{st.session_state.fund_currency}_{start_d}_{end_d}"
-                        st.session_state.cached_data_keys.add(cache_key)
-                        # ------------------------------------------
-                        
-                        st.success("Data berhasil dimuat!")
-                        st.rerun()
-                        
-                except Exception as e:
-                    st.error(f"❌ Pemuatan Dibatalkan: {e}. Silakan periksa koneksi.")
-        else:
-            st.warning("Hubungkan ke Refinitiv terlebih dahulu.")
+                        st.success("Sinkronisasi berhasil! Database diupdate.")
+                        time.sleep(1.5)
+                        # Aplikasi akan memuat ulang dan langsung membaca dari database yang baru diupdate
+                        st.rerun() 
+                    except Exception as e:
+                        st.error(f"❌ Sinkronisasi Gagal: {e}")
+                else:
+                    st.error("Gagal terhubung ke API Refinitiv.")
 
     st.divider()
     
     # Manajemen Produk Kustom (hanya untuk IDR)
-    if st.session_state.connected and st.session_state.fund_currency == 'IDR':
-        st.subheader("➕ Tambah/Hapus Produk")
-        
-        tab_add_equity, tab_add_bond, tab_delete = st.tabs(["Tambah Equity", "Tambah Fixed Income", "Hapus Produk"])
-        
-        with tab_add_equity:
-            with st.form("form_add_equity"):
-                new_eq_ticker = st.text_input("Ticker Equity", placeholder="Contoh: LP68059065")
-                new_eq_name = st.text_input("Nama Equity", placeholder="Contoh: Allianz Alpha Sector Rotation")
-                
-                if st.form_submit_button("Validasi & Tambah"):
-                    if new_eq_ticker and new_eq_name:
-                        with st.spinner("Memvalidasi ticker..."):
-                            if validate_ticker(new_eq_ticker, "Equity"):
-                                st.session_state.custom_equity[new_eq_ticker] = new_eq_name
-                                st.success(f"✅ {new_eq_name} berhasil ditambahkan!")
-                                st.info("Silakan muat ulang data untuk melihat produk baru.")
-                            else:
-                                st.error("❌ Ticker tidak ditemukan di Refinitiv!")
-                    else:
-                        st.warning("Harap isi ticker dan nama produk.")
-        
-        with tab_add_bond:
-            with st.form("form_add_bond"):
-                new_bd_ticker = st.text_input("Ticker Fixed Income", placeholder="Contoh: LP68209699")
-                new_bd_name = st.text_input("Nama Fixed Income", placeholder="Contoh: Ashmore Dana Obligasi Nusantara")
-                
-                if st.form_submit_button("Validasi & Tambah"):
-                    if new_bd_ticker and new_bd_name:
-                        with st.spinner("Memvalidasi ticker..."):
-                            if validate_ticker(new_bd_ticker, "Fixed Income"):
-                                st.session_state.custom_bond[new_bd_ticker] = new_bd_name
-                                st.success(f"✅ {new_bd_name} berhasil ditambahkan!")
-                                st.info("Silakan muat ulang data untuk melihat produk baru.")
-                            else:
-                                st.error("❌ Ticker tidak ditemukan di Refinitiv!")
-                    else:
-                        st.warning("Harap isi ticker dan nama produk.")
-        
-        with tab_delete:
-            st.subheader("🗑️ Hapus Produk Kustom")
-            
-            all_custom = {}
-            all_custom.update({f"Equity: {v}": k for k, v in st.session_state.custom_equity.items()})
-            all_custom.update({f"Fixed Income: {v}": k for k, v in st.session_state.custom_bond.items()})
-            
-            if all_custom:
-                product_to_delete_display = st.selectbox("Pilih produk untuk dihapus", list(all_custom.keys()))
-                if st.button("Hapus Produk", type="secondary"):
-                    ticker_to_delete = all_custom[product_to_delete_display]
-                    if "Equity:" in product_to_delete_display:
-                        del st.session_state.custom_equity[ticker_to_delete]
-                    else:
-                        del st.session_state.custom_bond[ticker_to_delete]
-                    st.success(f"Produk {product_to_delete_display} dihapus!")
-                    st.info("Silakan muat ulang data untuk melihat perubahan.")
-            else:
-                st.info("Belum ada produk kustom.")
+   # ==========================================
+    # MANAJEMEN INSTRUMEN (CRUD & AUTO-BACKFILL)
+    # ==========================================
+    st.subheader("⚙️ Database Instrumen (CRUD)")
     
+    tab_mf, tab_bond, tab_macro, tab_del = st.tabs(["Reksa Dana", "Obligasi", "Makro", "Hapus"])
+    
+    # 1. FORM REKSA DANA
+    with tab_mf:
+        with st.form("form_add_mf"):
+            mf_ticker = st.text_input("Ticker (LP...)", placeholder="Contoh: LP68059065")
+            mf_name = st.text_input("Nama Reksa Dana")
+            mf_type = st.selectbox("Fund Type", ["Equity", "Fixed Income"])
+            mf_curr = st.selectbox("Mata Uang", ["IDR", "USD"], key="mf_c")
+            
+            if st.form_submit_button("Tambah & Backfill 25 Thn"):
+                if mf_ticker and mf_name:
+                    with st.spinner("Membuka koneksi Refinitiv & Menarik Historis (± 1 Menit)..."):
+                        # Buka sesi Refinitiv secara otomatis jika belum terkoneksi
+                        if not st.session_state.connected:
+                            st.session_state.connected = init_refinitiv_session()
+                            
+                        if st.session_state.connected:
+                            if validate_ticker(mf_ticker, "MF"):
+                                # Insert ke Master DB
+                                supabase.table("mf_instruments").upsert([{"ticker": mf_ticker, "name": mf_name, "fund_type": mf_type, "currency": mf_curr}]).execute()
+                                # Backfill Historis
+                                success = backfill_new_instrument("mf_nav_daily", "ticker", mf_ticker, ['TR.NETASSETVAL.date', 'TR.NETASSETVAL'], ["nav"], {'Instrument': 'ticker', 'Date': 'date', 'TR.NETASSETVAL.date': 'date', 'TR.NETASSETVAL': 'nav', 'Net Asset Value': 'nav'})
+                                if success:
+                                    load_master_instruments.clear()
+                                    st.success(f"✅ {mf_name} berhasil ditambahkan dan data historis diunduh!")
+                                    st.rerun()
+                            else:
+                                st.error("❌ Ticker tidak ditemukan di Refinitiv!")
+                        else:
+                            st.error("❌ Gagal terhubung ke API Refinitiv.")
+                else: st.warning("Isi Ticker dan Nama!")
+
+    # 2. FORM OBLIGASI NEGARA
+    with tab_bond:
+        with st.form("form_add_bond"):
+            bond_isin = st.text_input("ISIN Code / Ticker", placeholder="Contoh: IDFR0100=")
+            bond_name = st.text_input("Nama Obligasi", placeholder="Contoh: FR100")
+            bond_curr = st.selectbox("Mata Uang", ["IDR", "USD"], key="bd_c")
+            
+            if st.form_submit_button("Tambah & Backfill 25 Thn"):
+                if bond_isin and bond_name:
+                    with st.spinner("Membuka koneksi Refinitiv & Menarik Historis..."):
+                        if not st.session_state.connected:
+                            st.session_state.connected = init_refinitiv_session()
+                            
+                        if st.session_state.connected:
+                            supabase.table("gov_bonds_instruments").upsert([{"isin_code": bond_isin, "name": bond_name, "currency": bond_curr}]).execute()
+                            success = backfill_new_instrument("gov_bonds_prices_daily", "isin_code", bond_isin, ['TR.ASKPRICE.date', 'TR.ASKPRICE', 'TR.ASKYIELD'], ["ask_price", "ask_yield"], {'Instrument': 'isin_code', 'Date': 'date', 'Ask Price': 'ask_price', 'Ask Yield': 'ask_yield', 'TR.ASKPRICE.date': 'date', 'TR.ASKPRICE': 'ask_price', 'TR.ASKYIELD': 'ask_yield'})
+                            if success:
+                                load_master_instruments.clear()
+                                st.success("✅ Obligasi ditambahkan!")
+                                st.rerun()
+                        else:
+                            st.error("❌ Gagal terhubung ke API Refinitiv.")
+                else: st.warning("Isi ISIN dan Nama!")
+
+    # 3. FORM MAKRO
+    with tab_macro:
+        with st.form("form_add_macro"):
+            mac_ticker = st.text_input("Ticker Makro", placeholder="Contoh: .JKSE")
+            mac_name = st.text_input("Nama Makro", placeholder="Contoh: IHSG")
+            mac_cat = st.selectbox("Kategori", ["Index", "Interest Rate", "Currency", "Commodity"])
+            mac_metric = st.selectbox("Metric Type API", ["Price Close", "Close Price", "America Close Bid Price"])
+            # Opsi dropdown mata uang telah dihapus
+            
+            if st.form_submit_button("Tambah & Backfill 25 Thn"):
+                if mac_ticker and mac_name:
+                    with st.spinner("Membuka koneksi Refinitiv & Menarik Historis Makro..."):
+                        if not st.session_state.connected:
+                            st.session_state.connected = init_refinitiv_session()
+                            
+                        if st.session_state.connected:
+                            # Hapus parameter "currency": "ALL" agar tidak error dengan skema DB
+                            supabase.table("macro_instruments").upsert([
+                                {"ticker": mac_ticker, "name": mac_name, "category": mac_cat, "metric_type": mac_metric}
+                            ]).execute()
+                            
+                            # Definisikan API mapping dinamis berdasarkan pilihan dropdown
+                            field_code = "TR.PriceClose" if mac_metric == "Price Close" else ("TR.AmericaCloseBidPrice" if mac_metric == "America Close Bid Price" else "TR.ClosePrice")
+                            
+                            success = backfill_new_instrument("macro_daily", "ticker", mac_ticker, [f"{field_code}.date", field_code], ["value"], {'Instrument': 'ticker', 'Date': 'date', f'{field_code}.date': 'date', field_code: 'value', 'Price Close': 'value', 'Close Price': 'value', 'America Close Bid Price': 'value', 'cLOSE Price': 'value'})
+                            if success:
+                                load_master_instruments.clear()
+                                st.success("✅ Makro ditambahkan!")
+                                st.rerun()
+                        else:
+                            st.error("❌ Gagal terhubung ke API Refinitiv.")
+                else: st.warning("Lengkapi data makro!")
+
+    # 4. FORM HAPUS (DELETE)
+    with tab_del:
+        mf_master, bond_master, macro_master = load_master_instruments()
+        all_del_opts = {f"MF: {x['name']}": ("mf_instruments", "ticker", x['ticker']) for x in mf_master}
+        all_del_opts.update({f"Bond: {x['name']}": ("gov_bonds_instruments", "isin_code", x['isin_code']) for x in bond_master})
+        all_del_opts.update({f"Macro: {x['name']}": ("macro_instruments", "ticker", x['ticker']) for x in macro_master})
+        
+        if all_del_opts:
+            sel_del = st.selectbox("Pilih Instrumen untuk Dihapus:", list(all_del_opts.keys()))
+            if st.button("🗑️ Hapus Instrumen", type="secondary"):
+                t_name, col_name, val_id = all_del_opts[sel_del]
+                supabase.table(t_name).delete().eq(col_name, val_id).execute()
+                load_master_instruments.clear()
+                st.success(f"Berhasil dihapus dari master data.")
+                st.rerun()
+        else:
+            st.info("Database instrumen kosong.")
     st.divider()
     
-# Tampilkan Pilihan Interval Analisis & Benchmark (setelah data dimuat)
+    # ==========================================
+    # KONTROL ANALISIS (TAMPIL JIKA DATA LOADED)
+    # ==========================================
     if st.session_state.data_loaded:
         fetched_start = pd.to_datetime(st.session_state.start_date).date()
         fetched_end = pd.to_datetime(st.session_state.end_date).date()
         
         st.subheader("✂️ Cut-off Data Analisis")
-        st.caption("Batasi rentang tanggal historis utama yang ingin dievaluasi (memotong dataset API).")
+        st.caption("Batasi rentang historis untuk komputasi metrik.")
+        
+        # Tambahkan batas eksplisit agar bisa memilih tahun 2000 ke atas
+        min_date_allowed = dt.date(2000, 1, 1)
+        max_date_allowed = dt.datetime.today().date()
         
         col_a1, col_a2 = st.columns(2)
         with col_a1:
-            raw_start_date = st.date_input("Start Analisis", value=fetched_start, key="ana_start")
+            raw_start_date = st.date_input("Start", value=fetched_start, min_value=min_date_allowed, max_value=max_date_allowed, key="ana_start")
         with col_a2:
-            raw_end_date = st.date_input("End Analisis", value=fetched_end, key="ana_end")
+            raw_end_date = st.date_input("End", value=fetched_end, min_value=min_date_allowed, max_value=max_date_allowed, key="ana_end")
             
-        # --- Validasi & Error Messages ---
-        analysis_start_date = raw_start_date
-        analysis_end_date = raw_end_date
-        
-        if raw_start_date < fetched_start:
-            st.error(f"⚠️ Start Analisis melampaui data API. Dipaksa mulai dari: {fetched_start.strftime('%d %b %Y')}")
-            analysis_start_date = fetched_start
-            
-        if raw_end_date > fetched_end:
-            st.error(f"⚠️ End Analisis melampaui data API. Dipaksa berhenti di: {fetched_end.strftime('%d %b %Y')}")
-            analysis_end_date = fetched_end
-            
+        analysis_start_date = max(raw_start_date, fetched_start)
+        analysis_end_date = min(raw_end_date, fetched_end)
         if analysis_start_date > analysis_end_date:
-            st.error("⚠️ Start Analisis tidak boleh lebih besar dari End!")
             analysis_start_date = analysis_end_date
             
-        st.info(f"Data aktif: **{analysis_start_date.strftime('%d %b %Y')}** s/d **{analysis_end_date.strftime('%d %b %Y')}**")
+        st.info(f"Aktif: **{analysis_start_date.strftime('%d/%m/%y')}** - **{analysis_end_date.strftime('%d/%m/%y')}**")
 
-        st.subheader("⏱️ Interval Kalkulasi (Rolling)")
-        st.caption("Pilih jendela waktu (window) untuk kalkulasi metrik berjalan (Heatmap, Volatilitas, dll).")
-        date_option = st.selectbox(
-            "Pilih Interval:",
-            options=["1 Bulan", "3 Bulan", "6 Bulan", "1 Tahun"],
-            index=3, 
-            key="interval_analisis"
-        )
-        # --- TAMBAHAN FILTER SKORING ---
-        st.subheader("🎯 Fokus Skoring (Ranking)")
+        st.subheader("⏱️ Parameter Kalkulasi")
+        # UBAH: Tambahkan opsi 3 Tahun dan 5 Tahun
+        date_option = st.selectbox("Interval Rolling:", ["1 Bulan", "3 Bulan", "6 Bulan", "1 Tahun", "3 Tahun", "5 Tahun"], index=3, key="interval_analisis")
+        
         scoring_mode = st.selectbox(
-            "Pilih Metrik Penentu Peringkat:",
-            options=["Balanced (Semua Metrik)", "Fokus Return (Profit)", "Fokus Risiko & Rasio", "Fokus Konsistensi", "Fokus Momentum (Climbers)", "Fokus Valuasi (Murah/Mahal)"],
-            index=0,
-            key="scoring_mode_select"
+            "Fokus Skoring:",
+            ["Balanced (Semua Metrik)", "Fokus Return (Profit)", "Fokus Risiko & Rasio", "Fokus Konsistensi", "Fokus Momentum (Climbers)", "Fokus Valuasi (Murah/Mahal)"],
+            index=0, key="scoring_mode_select"
         )
         
-        st.subheader("🎯 Parameter Benchmark")
-        # Pilihan benchmark berdasarkan mata uang
-        if st.session_state.fund_currency == 'USD':
-            benchmark_options = {
-                'NASDAQ (.IXIC)': '.IXIC',
-                'S&P 500 (.SPX)': '.SPX',
-                'DXY (US Dollar Index)': '.DXY',
-                'Shanghai Composite (.SSEC)': '.SSEC',
-                'US 10Y Treasury Yield (US10YT=RR)': 'US10YT=RR',
-                'Minyak Mentah (CLc1)': 'CLc1',
-                'Suku Bunga 10Y (ID10YT=RR)': 'ID10YT=RR'
-            }
-        else:
-            benchmark_options = {
-                'IHSG (.JKSE)': '.JKSE',
-                'LQ45 (.JKLQ45)': '.JKLQ45',
-                'IDX30 (.JKIDX30)': '.JKIDX30',
-                'IDX80 (.JKIDX80)': '.JKIDX80',
-                'Minyak Mentah (CLc1)': 'CLc1',
-                'Kurs IDR (IDR=)': 'IDR=',
-                'Suku Bunga 10Y (ID10YT=RR)': 'ID10YT=RR',
-                'Suku Bunga 10Y US (US10YT=RR)': 'US10YT=RR'
-            }
-        selected_bench_label = st.selectbox("Pilih Benchmark untuk Beta & Alpha", list(benchmark_options.keys()), key="benchmark_select")
-        selected_benchmark_ticker = benchmark_options[selected_bench_label]
+        # Pilihan benchmark digabung dan tidak dibatasi currency
+        benchmark_options = {
+            'IHSG (.JKSE)': '.JKSE', 'LQ45 (.JKLQ45)': '.JKLQ45', 'IDX30': '.JKIDX30', 
+            'IDX80': '.JKIDX80', 'NASDAQ (.IXIC)': '.IXIC', 'S&P 500 (.SPX)': '.SPX', 
+            'Shanghai (.SSEC)': '.SSEC', 'DXY Index': '.DXY', 'Kurs IDR': 'IDR=',
+            'Crude Oil (CLc1)': 'CLc1', 'IDR 10Y Yield': 'ID10YT=RR', 'US 10Y Yield': 'US10YT=RR'
+        }
+            
+        selected_bench_label = st.selectbox("Benchmark Alpha & Beta", list(benchmark_options.keys()), key="benchmark_select")
         
-        st.session_state.selected_benchmark_ticker = selected_benchmark_ticker
-        st.session_state.selected_benchmark_label = selected_bench_label
+        st.session_state.selected_benchmark_ticker = benchmark_options[selected_bench_label]
     else:
-        date_option = "1 Tahun" 
-        selected_benchmark_ticker = ".JKSE"
-        selected_benchmark_label = "IHSG (.JKSE)"
-        st.session_state.selected_benchmark_ticker = selected_benchmark_ticker
-        st.session_state.selected_benchmark_label = selected_benchmark_label
+        # Fallback jika data belum diload
+        st.session_state.selected_benchmark_ticker = ".JKSE"
+        st.session_state.selected_benchmark_label = "IHSG (.JKSE)"
 
     st.sidebar.divider()
-    st.sidebar.caption("© 2024 Investment Dashboard")
+    st.sidebar.caption("© 2026 Investment Dashboard")
 
 # ==================== HALAMAN UTAMA ====================
 st.title("📊 Investment Dashboard - Reksa Dana Indonesia")
 if st.session_state.start_date and st.session_state.end_date:
     st.markdown(f"Periode Data: {st.session_state.start_date.strftime('%d %b %Y')} s/d {st.session_state.end_date.strftime('%d %b %Y')}")
     st.markdown(f"Mata Uang Reksa Dana: **{st.session_state.fund_currency}**")
-
-if not st.session_state.data_loaded:
-    st.info("👈 Silakan hubungkan ke Refinitiv dan muat data dari sidebar untuk memulai.")
-    st.stop()
-
+    
 # ==================== AMBIL DATA DARI CACHE ====================
 all_data, _, _ = load_all_data(
     st.session_state.start_date, 
     st.session_state.end_date,
-    currency=st.session_state.fund_currency,
-    custom_equity_tuple=tuple(st.session_state.custom_equity.items()) if st.session_state.fund_currency == 'IDR' else None,
-    custom_bond_tuple=tuple(st.session_state.custom_bond.items()) if st.session_state.fund_currency == 'IDR' else None
+    currency=st.session_state.fund_currency
 )
+
 df_equity_full = all_data['equity']
 df_bond_full = all_data['bond']
 df_index_full = all_data['index']
@@ -1107,9 +1126,37 @@ df_komoditas_full = all_data['komoditas']
 df_mata_uang_full = all_data['mata_uang']
 df_suku_bunga_full = all_data['suku_bunga']
 
-risk_free_rate = st.session_state.risk_free_rate
-selected_benchmark_ticker = st.session_state.selected_benchmark_ticker
-selected_benchmark_label = st.session_state.selected_benchmark_label
+# --- TAMBAHAN: INFORMASI UPDATED AT ---
+# Mencari tanggal ketersediaan data paling akhir dari seluruh tabel
+list_of_dfs = [df_equity_full, df_bond_full, df_index_full, df_komoditas_full, df_mata_uang_full, df_suku_bunga_full]
+latest_dates = [df.index.max() for df in list_of_dfs if not df.empty and df.index.max() is not pd.NaT]
+
+if latest_dates:
+    latest_update = max(latest_dates)
+    st.caption(f"🔄 **Data Last Updated At:** {latest_update.strftime('%d %b %Y')}")
+
+# --- DETEKSI REKSA DANA MUDA (< 1 TAHUN / < 252 Hari Bursa) ---
+# --- DETEKSI REKSA DANA MUDA (< 1 TAHUN KALENDER DARI DATABASE) ---
+def get_young_funds(df):
+    young = []
+    today = pd.Timestamp(dt.datetime.today().date())
+    
+    for col in df.columns:
+        first_date = df[col].first_valid_index()
+        if first_date is not None:
+            # Hitung selisih hari kalender dari data terawal hingga hari ini
+            if (today - first_date).days <= 365:
+                young.append(col)
+                
+    return young
+
+young_equities = get_young_funds(df_equity_full)
+young_bonds = get_young_funds(df_bond_full)
+young_all = young_equities + young_bonds
+
+young_equities = get_young_funds(df_equity_full)
+young_bonds = get_young_funds(df_bond_full)
+young_all = young_equities + young_bonds
 
 # ==================== EKSTRAK BENCHMARK SERIES ====================
 def get_benchmark_series(ticker, dfs_dict):
@@ -1122,10 +1169,15 @@ full_dfs_dict = {
     'index': df_index_full, 'komoditas': df_komoditas_full, 
     'mata_uang': df_mata_uang_full, 'suku_bunga': df_suku_bunga_full
 }
+
+# --- TARIK VARIABEL DARI SESSION STATE ---
+selected_benchmark_ticker = st.session_state.selected_benchmark_ticker
+selected_benchmark_label = st.session_state.selected_benchmark_label
+
 benchmark_series_full = get_benchmark_series(selected_benchmark_ticker, full_dfs_dict)
 
 if benchmark_series_full.empty:
-    st.warning(f"Data benchmark {selected_benchmark_ticker} tidak tersedia. Kalkulasi Beta & Alpha disetel ke 0.")
+    st.warning(f"Data benchmark {selected_benchmark_label} tidak tersedia. Kalkulasi Beta & Alpha disetel ke 0.")
     benchmark_series_full = pd.Series(0.0, index=df_equity_full.index)
 
 # ==================== SLICING DATA BERDASARKAN RENTANG WAKTU (CUT-OFF) ====================
@@ -1144,7 +1196,25 @@ df_index = safe_slice(df_index_full, ana_start_dt, ana_end_dt)
 df_komoditas = safe_slice(df_komoditas_full, ana_start_dt, ana_end_dt)
 df_mata_uang = safe_slice(df_mata_uang_full, ana_start_dt, ana_end_dt)
 df_suku_bunga = safe_slice(df_suku_bunga_full, ana_start_dt, ana_end_dt)
+# Ekstrak df_gov_bonds dari all_data
+# Ekstrak df_gov_bonds dari all_data
+df_gov_bonds_price_full = all_data.get('gov_bonds_price', pd.DataFrame())
+df_gov_bonds_yield_full = all_data.get('gov_bonds_yield', pd.DataFrame())
 
+df_gov_bonds_price = safe_slice(df_gov_bonds_price_full, ana_start_dt, ana_end_dt)
+df_gov_bonds_yield = safe_slice(df_gov_bonds_yield_full, ana_start_dt, ana_end_dt)
+
+# ==================== RISK FREE RATE DINAMIS ====================
+rf_ticker = 'US10YT=RR' if st.session_state.fund_currency == 'USD' else 'ID10YT=RR'
+if rf_ticker in df_suku_bunga.columns and not df_suku_bunga.empty:
+    # Ambil yield di hari terakhir pada interval analisis yang dipilih pengguna
+    dynamic_rf_rate = float(df_suku_bunga[rf_ticker].iloc[-1]) / 100
+else:
+    dynamic_rf_rate = 0.065 # Fallback
+
+# Timpa variabel global risk_free_rate untuk dipakai oleh fungsi calculate_metrics dkk
+risk_free_rate = dynamic_rf_rate
+st.sidebar.caption(f"Risk Free Rate Aktual ({ana_end_dt.strftime('%d/%m/%y')}): **{risk_free_rate*100:.2f}%**")
 df_all_instruments = pd.concat([df_equity, df_bond], axis=1)
 df_all_instruments = ensure_unique_columns(df_all_instruments)
 
@@ -1152,6 +1222,7 @@ benchmark_series_sliced = safe_slice(benchmark_series_full, ana_start_dt, ana_en
 
 df_all_instruments_full = ensure_unique_columns(pd.concat([df_equity_full, df_bond_full], axis=1))
 
+# --- Tentukan Jendela Evaluasi (Window) berdasarkan Interval ---
 # --- Tentukan Jendela Evaluasi (Window) berdasarkan Interval ---
 if date_option == "1 Bulan":
     cutoff_days = 22
@@ -1161,6 +1232,11 @@ elif date_option == "6 Bulan":
     cutoff_days = 126
 elif date_option == "1 Tahun":
     cutoff_days = 252
+# TAMBAHAN: Logika 3 dan 5 Tahun
+elif date_option == "3 Tahun":
+    cutoff_days = 756  # 252 * 3
+elif date_option == "5 Tahun":
+    cutoff_days = 1260 # 252 * 5
 else:
     cutoff_days = 252
 
@@ -1205,13 +1281,14 @@ ranked_products_bond = calculate_ranking_scores(metrics_bond, weights=weights_di
 leaderboard_daily = calculate_daily_leaderboard(df_all_instruments, days=7)
 
 # ==================== TABS ====================
-tab_overview, tab_leaderboard_split,  tab_performance, tab_correlation, tab_compare, tab_recommendation = st.tabs([
+tab_overview, tab_leaderboard_split,  tab_performance, tab_correlation, tab_compare, tab_recommendation, tab_gov_bonds = st.tabs([
     "📋 Ringkasan", 
     "🏆 Leaderboard", 
     "📊 Performa & Ranking", 
     "📈 Korelasi",  
     "📉 Perbandingan Historis",
-    "🎯 Rekomendasi Refinitiv"
+    "🎯 Rekomendasi Refinitiv",
+    "🏛️ Obligasi Negara"
 ])
 
 # --- Tab 1: Ringkasan ---
@@ -1262,23 +1339,14 @@ with tab_overview:
     else:
         st.warning(f"Tidak ada data peringkat untuk {top10_category}.")
 
-    st.subheader("📈 Pergerakan Indeks Acuan")
-    
-    # Gunakan benchmark_series_sliced karena sudah memuat semua tipe (indeks, makro, komoditas)
-    if not benchmark_series_sliced.empty and not (benchmark_series_sliced == 0.0).all():
-        # Konversi Pandas Series ke DataFrame untuk Plotly
-        df_plot_bench = benchmark_series_sliced.reset_index()
-        df_plot_bench.columns = ['Date', 'Value']
-        
-        fig_idx = px.line(df_plot_bench, x='Date', y='Value', title=f'{selected_benchmark_label} - Harga Historis')
-        fig_idx.update_layout(xaxis_title="Tanggal", yaxis_title="Nilai/Harga")
-        st.plotly_chart(fig_idx, use_container_width=True)
-    else:
-        st.warning(f"Data {selected_benchmark_label} tidak tersedia atau bernilai 0.")
-
-# Tab 2-7 (sama seperti sebelumnya, tidak diubah)
-# ... (potongan kode untuk tab ranking, leaderboard, korelasi, performa equity, performa bond, perbandingan historis)
-# Karena panjang, saya sertakan di bawah sebagai kelanjutan.
+    # --- TAMBAHAN: TABEL KHUSUS REKSA DANA MUDA ---
+    young_list_to_show = young_equities if top10_category == "Equity" else young_bonds
+    if young_list_to_show:
+        st.divider()
+        st.warning(f"⚠️ Terdapat **{len(young_list_to_show)} {top10_category}** yang baru diluncurkan (Umur < 1 Tahun).")
+        st.caption("Data historis produk di bawah ini masih terbatas sehingga komputasi metrik jangka panjang (seperti Return 1 Tahun atau Volatilitas Tahunan) mungkin kurang representatif.")
+        df_young_display = pd.DataFrame({f"Daftar Instrumen {top10_category} Muda": young_list_to_show})
+        st.dataframe(df_young_display, hide_index=True, use_container_width=True)
 
 # ==================== TAB 2: LEADERBOARD ====================
 with tab_leaderboard_split:
@@ -1322,7 +1390,15 @@ with tab_leaderboard_split:
                     st.info("Tidak ada top laggards dalam periode ini.")
 
             st.subheader(f"📋 Leaderboard Lengkap Return 5 Hari {title}")
-            st.dataframe(leaderboard_display.sort_values('Rank_Today'), hide_index=True, use_container_width=True)
+            
+            # Highlight Kuning untuk tabel Leaderboard
+            df_lb_sorted = leaderboard_display.sort_values('Rank_Today')
+            def highlight_lb_young(row):
+                if row['Instrument'] in young_all:
+                    return ['background-color: rgba(255, 215, 0, 0.2)'] * len(row) # Warna kuning stabilo transparan
+                return [''] * len(row)
+                
+            st.dataframe(df_lb_sorted.style.apply(highlight_lb_young, axis=1), hide_index=True, use_container_width=True)
             
             st.subheader(f"💡 Produk Performa Terbaik Selama 5 Hari {title}")
             top_3 = leaderboard_display.nsmallest(3, 'Rank_Today')
@@ -1380,11 +1456,36 @@ with tab_leaderboard_split:
 with tab_correlation:
     st.header("Analisis Korelasi")
     st.info("ℹ️ **Metodologi:** Menggunakan **Korelasi Pearson** pada pergerakan *return* harian. Nilai 1 (Hijau) berarti pergerakan searah sempurna, -1 (Merah) berlawanan sempurna, dan 0 (Kuning/Pucat) menunjukkan tidak ada hubungan linier antar aset.")
+    
+    # --- 1. Ekstrak Daftar Manajer Investasi (MI) Dinamis ---
+    all_fund_names = list(df_equity.columns) + list(df_bond.columns)
+    mi_set = set()
+    for name in all_fund_names:
+        if name.startswith("BNP Paribas"): 
+            mi_set.add("BNP Paribas")
+        elif name.startswith("Eastspring"): 
+            mi_set.add("Eastspring")
+        else: 
+            mi_set.add(name.split()[0]) # Ambil kata pertama (Maybank, Schroder, Batavia, dll)
+            
+    mi_list = ["Semua"] + sorted(list(mi_set))
+    
+    # --- 2. Konfigurasi Filter Sumbu X dan Y ---
     col_corr1, col_corr2 = st.columns(2)
     with col_corr1:
         grup1 = st.selectbox("Pilih Grup Aset 1 (Sumbu Y)", options=["Equity", "Fixed Income"], key="corr_grup1")
+        filter_mi1 = st.selectbox(f"Filter MI {grup1} (Sumbu Y):", options=mi_list, index=0, key="mi_grup1")
+        
     with col_corr2:
         grup2 = st.selectbox("Pilih Grup Aset 2 (Sumbu X)", options=["Equity", "Fixed Income", "Indeks", "Komoditas", "Mata Uang", "Suku Bunga"], key="corr_grup2")
+        # Filter MI di Sumbu X hanya relevan jika yang dipilih adalah reksa dana
+        if grup2 in ["Equity", "Fixed Income"]:
+            filter_mi2 = st.selectbox(f"Filter MI {grup2} (Sumbu X):", options=mi_list, index=0, key="mi_grup2")
+        else:
+            filter_mi2 = "Semua"
+            st.selectbox(f"Filter MI (Tidak berlaku untuk {grup2}):", options=["-"], disabled=True)
+
+    # --- 3. Tarik Data Utama ---
     dict_dfs = {
         "Equity": df_equity,
         "Fixed Income": df_bond,
@@ -1393,40 +1494,64 @@ with tab_correlation:
         "Mata Uang": df_mata_uang,
         "Suku Bunga": df_suku_bunga
     }
-    df_grup1 = dict_dfs[grup1]
-    df_grup2 = dict_dfs[grup2]
+    
+    df_grup1 = dict_dfs[grup1].copy()
+    df_grup2 = dict_dfs[grup2].copy()
+    
+    # --- 4. Eksekusi Pemotongan Kolom Berdasarkan MI ---
+    if filter_mi1 != "Semua":
+        cols_to_keep = [c for c in df_grup1.columns if c.startswith(filter_mi1)]
+        df_grup1 = df_grup1[cols_to_keep]
+        
+    if filter_mi2 != "Semua" and grup2 in ["Equity", "Fixed Income"]:
+        cols_to_keep = [c for c in df_grup2.columns if c.startswith(filter_mi2)]
+        df_grup2 = df_grup2[cols_to_keep]
+
+    # --- 5. Kalkulasi Return & Matriks ---
     returns_grup1 = df_grup1.dropna(axis=1, how='all').ffill().bfill().pct_change().dropna(how='all')
     returns_grup2 = df_grup2.dropna(axis=1, how='all').ffill().bfill().pct_change().dropna(how='all')
     returns_grup1, returns_grup2 = returns_grup1.align(returns_grup2, join='inner', axis=0)
+    
     if not returns_grup1.empty and not returns_grup2.empty:
-        if grup1 == grup2:
-            title = f"Matriks Korelasi Antar {grup1}"
+        # Jika membandingkan dua dataset yang persis sama (termasuk filter MI-nya sama)
+        if grup1 == grup2 and filter_mi1 == filter_mi2:
+            title_suffix = filter_mi1 if filter_mi1 != "Semua" else ""
+            title = f"Matriks Korelasi Internal {grup1} {title_suffix}".strip()
+            
             corr_matrix = returns_grup1.corr()
             mask_plot = np.triu(np.ones(corr_matrix.shape), k=1).astype(bool)
             corr_matrix_plot = corr_matrix.mask(mask_plot)
         else:
-            title = f"Matriks Korelasi {grup1} vs {grup2}"
+            title_y = f"{filter_mi1} {grup1}" if filter_mi1 != "Semua" else grup1
+            title_x = f"{filter_mi2} {grup2}" if filter_mi2 != "Semua" else grup2
+            title = f"Matriks Korelasi: {title_y} vs {title_x}"
+            
             corr_dict = {}
             for col2 in returns_grup2.columns:
                 corr_dict[col2] = returns_grup1.apply(lambda x: x.corr(returns_grup2[col2]))
             corr_matrix = pd.DataFrame(corr_dict)
             corr_matrix_plot = corr_matrix.copy()
+            
         fig_corr = px.imshow(
             corr_matrix_plot, text_auto='.2f', aspect="auto",
             color_continuous_scale='RdYlGn', zmin=-1, zmax=1, title=title,
-            labels=dict(y=f"Grup 1: {grup1}", x=f"Grup 2: {grup2}", color="Korelasi")
+            labels=dict(y=f"Sumbu Y", x=f"Sumbu X", color="Korelasi")
         )
         fig_corr.update_layout(height=800)
         st.plotly_chart(fig_corr, use_container_width=True)
+        
         corr_matrix.index.name = 'Asset_1'
         corr_matrix.columns.name = 'Asset_2'
-        if grup1 == grup2:
+        
+        if grup1 == grup2 and filter_mi1 == filter_mi2:
             mask_table = np.triu(np.ones(corr_matrix.shape), k=1).astype(bool)
             corr_long = corr_matrix.where(mask_table).stack().reset_index()
         else:
             corr_long = corr_matrix.stack().reset_index()
+            
         corr_long.columns = ['Asset_1', 'Asset_2', 'Correlation']
         corr_long = corr_long.dropna()
+        
         col1, col2 = st.columns(2)
         with col1:
             st.subheader("🔥 Top 5 Korelasi Positif Tertinggi")
@@ -1437,7 +1562,7 @@ with tab_correlation:
             bottom_corr = corr_long.sort_values('Correlation', ascending=True).head(5)
             st.dataframe(bottom_corr, hide_index=True, use_container_width=True)
     else:
-        st.warning("Data tidak cukup untuk analisis korelasi pada kombinasi grup ini.")
+        st.warning("Data tidak cukup atau filter MI tidak menemukan instrumen yang relevan pada grup yang dipilih.")
         
 # ==================== TAB 4: PERFORMA & RANKING (GABUNGAN) ====================
 with tab_performance:
@@ -1640,7 +1765,19 @@ with tab_performance:
                 
         final_format = {k: v for k, v in cols_to_format.items() if k in full_performance_display.columns}
         
-        st.dataframe(full_performance_display.style.format(final_format), use_container_width=True)
+        final_format = {k: v for k, v in cols_to_format.items() if k in full_performance_display.columns}
+        
+        # --- HIGHLIGHT KUNING UNTUK REKSA DANA MUDA DI TABEL SKOR ---
+        def highlight_perf_young(row):
+            # Cek apakah nama index (nama produk) masuk daftar young_all
+            if row.name in young_all:
+                return ['background-color: rgba(255, 215, 0, 0.2)'] * len(row)
+            return [''] * len(row)
+
+        styled_performance_table = full_performance_display.style.apply(highlight_perf_young, axis=1).format(final_format)
+        
+        st.caption("*(Catatan: Baris yang di-highlight **Kuning** adalah instrumen berumur kurang dari 1 tahun)*")
+        st.dataframe(styled_performance_table, use_container_width=True)
 
         st.divider()
         
@@ -1981,8 +2118,52 @@ with tab_compare:
             
     else:
         st.info("Silakan pilih instrumen dari dropdown di atas untuk memulai analisis.")
+       
+# ==================== TAB 6: GRAFIK OBLIGASI NEGARA ====================
+with tab_gov_bonds:
+    st.header("🏛️ Grafik Obligasi Negara (SBN/SUN/Sukuk)")
+    st.info("Visualisasi historis Harga Penawaran (Ask Price) dan Imbal Hasil (Ask Yield) pada interval analisis.")
+    
+    if not df_gov_bonds_price.empty:
+        available_gov_bonds = df_gov_bonds_price.columns.tolist()
+        selected_gov_bonds = st.multiselect(
+            "Pilih Seri Obligasi untuk Ditampilkan:",
+            options=available_gov_bonds,
+            default=available_gov_bonds[:min(3, len(available_gov_bonds))] if available_gov_bonds else [],
+            key="gov_bonds_multiselect"
+        )
         
-# ==================== TAB 6: REKOMENDASI FUNDAMENTAL (MANUAL UPLOAD) ====================
+        if selected_gov_bonds:
+            legend_layout_gov = dict(orientation="h", yanchor="top", y=-0.2, xanchor="center", x=0.5, title=None)
+            
+            # --- GRAFIK HARGA (PRICE) ---
+            df_gov_price_plot = df_gov_bonds_price[selected_gov_bonds].copy()
+            df_gov_price_plot = df_gov_price_plot.ffill().bfill()
+            
+            fig_price = px.line(df_gov_price_plot, x=df_gov_price_plot.index, y=df_gov_price_plot.columns, title="Pergerakan Harga Ask Obligasi")
+            fig_price.update_layout(xaxis_title="Tanggal", yaxis_title="Ask Price", legend=legend_layout_gov, hovermode="x unified")
+            st.plotly_chart(fig_price, use_container_width=True)
+
+            st.divider()
+
+            # --- GRAFIK IMBAL HASIL (YIELD) ---
+            if not df_gov_bonds_yield.empty:
+                df_gov_yield_plot = df_gov_bonds_yield[selected_gov_bonds].copy()
+                df_gov_yield_plot = df_gov_yield_plot.ffill().bfill()
+                
+                fig_yield = px.line(df_gov_yield_plot, x=df_gov_yield_plot.index, y=df_gov_yield_plot.columns, title="Pergerakan Ask Yield (%)")
+                fig_yield.update_layout(xaxis_title="Tanggal", yaxis_title="Ask Yield (%)", legend=legend_layout_gov, hovermode="x unified")
+                st.plotly_chart(fig_yield, use_container_width=True)
+            else:
+                st.warning("Data Yield tidak tersedia.")
+        else:
+            st.info("Pilih minimal 1 seri obligasi.")
+    else:
+        st.warning("Data Obligasi Negara tidak tersedia di database untuk rentang waktu ini.")
+
+    st.divider()
+        
+# ==================== TAB 7: REKOMENDASI FUNDAMENTAL (MANUAL UPLOAD) ====================
 with tab_recommendation:
     st.header("🎯 Peringkat Fundamental (Data Manual)")
     st.info("Unggah file Excel atau CSV berisi metrik fundamental. Sistem memprioritaskan skor tinggi untuk Alpha/Sharpe/Treynor dan skor rendah untuk StdDev.")
@@ -2027,7 +2208,6 @@ with tab_recommendation:
         except Exception as e:
             st.error(f"❌ Gagal membaca dokumen: {e}")
 
-    # 4. Logika Tampilan (Render UI)
     # 4. Logika Tampilan (Render UI)
     if not data_valid:
         # Jika belum ada file atau file salah, tampilkan panduan & template
