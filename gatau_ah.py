@@ -778,7 +778,7 @@ def calculate_daily_leaderboard(price_data, days=5):
 
     # Mundur persis 'days' kalender absolut (misal 5 hari kalender)
     
-    target_N_days_ago = today_date - pd.Timedelta.shift(days=days)
+    target_N_days_ago = today_date - pd.Timedelta(days=days)
     target_N_plus_1_days_ago = yesterday_date - pd.Timedelta(days=days)
     # Cari indeks baris untuk tanggal hari ini dan kemarin
     idx_today = price_data.index.get_loc(today_date)
