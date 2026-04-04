@@ -357,7 +357,8 @@ def load_all_data(start_date, end_date, currency='IDR'):
         'gov_bonds_price': align_wide_df(df_gov_bonds_price), 'gov_bonds_yield': align_wide_df(df_gov_bonds_yield)
     }, start_date, end_date
 
-def calculate_metrics(price_data, benchmark_series, risk_free_rate, eval_window=None, young_funds_list=None):
+@st.cache_data(max_entries=50, show_spinner=False)
+def calculate_metrics(price_data, benchmark_series, risk_free_rate, eval_window=None, young_funds_list=None, bench_ticker=""):
     price_data = price_data.dropna(axis=1, how='all')
     price_data = price_data.ffill().bfill()
     
@@ -526,7 +527,8 @@ def calculate_metrics(price_data, benchmark_series, risk_free_rate, eval_window=
     metrics_df['Skor_Valuasi'] = skor_valuasi
     return metrics_df
 
-def calculate_rolling_timeseries(price_data, benchmark_series, risk_free_rate, window=63):
+@st.cache_data(max_entries=50, show_spinner=False)
+def calculate_rolling_timeseries(price_data, benchmark_series, risk_free_rate, window=63, bench_ticker=""):
     returns = price_data.pct_change().dropna(how='all')
     bench_returns = benchmark_series.pct_change().dropna()
     
@@ -558,6 +560,7 @@ def calculate_rolling_timeseries(price_data, benchmark_series, risk_free_rate, w
         'Volatility': volatility_ts
     }
 
+@st.cache_data(max_entries=50, show_spinner=False)
 def calculate_ranking_scores(metrics_df, weights=None):
     w = 1.0 / 25.0
     if weights is None:
@@ -604,7 +607,9 @@ def calculate_ranking_scores(metrics_df, weights=None):
 
     return df_scaled[['Total_Score'] + score_cols].sort_values('Total_Score', ascending=False)
 
-def get_7d_ranking_history(price_data, benchmark_series, risk_free_rate, eval_window=None, custom_weights=None, young_funds_list=None):
+@st.cache_data(max_entries=50, show_spinner=False)
+@st.cache_data(max_entries=50, show_spinner=False)
+def get_7d_ranking_history(price_data, benchmark_series, risk_free_rate, eval_window=None, custom_weights=None, young_funds_list=None, bench_ticker=""):
     history_ranks = {}
     if len(price_data) < 7: return pd.DataFrame()
     dates = price_data.index[-7:]
@@ -612,8 +617,8 @@ def get_7d_ranking_history(price_data, benchmark_series, risk_free_rate, eval_wi
         sliced_prices = price_data.loc[:date]
         sliced_bench = benchmark_series.loc[:date]
         if len(sliced_prices) < 10: continue
-        # INJEKSI PARAMETER PRODUK MUDA    
-        metrics = calculate_metrics(sliced_prices, sliced_bench, risk_free_rate, eval_window=eval_window, young_funds_list=young_funds_list)
+        # INJEKSI PARAMETER BARU
+        metrics = calculate_metrics(sliced_prices, sliced_bench, risk_free_rate, eval_window=eval_window, young_funds_list=young_funds_list, bench_ticker=bench_ticker)
         if metrics is not None and not metrics.empty:
             ranks = calculate_ranking_scores(metrics, weights=custom_weights)
             if not ranks.empty:
@@ -622,7 +627,8 @@ def get_7d_ranking_history(price_data, benchmark_series, risk_free_rate, eval_wi
                 history_ranks[date_str] = rank_series
     return pd.DataFrame(history_ranks)
 
-def get_detailed_ranking_history(price_data_full, benchmark_series_full, risk_free_rate, metric_window, num_columns=10, custom_weights=None, trading_days_interval=1, young_funds_list=None):
+@st.cache_data(max_entries=50, show_spinner=False)
+def get_detailed_ranking_history(price_data_full, benchmark_series_full, risk_free_rate, metric_window, num_columns=10, custom_weights=None, trading_days_interval=1, young_funds_list=None, bench_ticker=""):
     if len(price_data_full) < 1: return pd.DataFrame()
     total_points_needed = (num_columns - 1) * trading_days_interval + 1
     if len(price_data_full) < total_points_needed:
@@ -640,8 +646,9 @@ def get_detailed_ranking_history(price_data_full, benchmark_series_full, risk_fr
         sliced_bench = benchmark_series_full.iloc[idx_start:idx_today+1]
         if len(sliced_prices) < 10: continue
         
-        # INJEKSI PARAMETER PRODUK MUDA    
-        metrics = calculate_metrics(sliced_prices, sliced_bench, risk_free_rate, young_funds_list=young_funds_list)
+        # PERBAIKAN FATAL: Inject eval_window dan bench_ticker
+        metrics = calculate_metrics(sliced_prices, sliced_bench, risk_free_rate, eval_window=metric_window, young_funds_list=young_funds_list, bench_ticker=bench_ticker)
+        
         if metrics is not None and not metrics.empty:
             if idx_today > 0 and trading_days_interval == 1:
                 daily_pct = (price_data_full.iloc[idx_today] / price_data_full.iloc[idx_today-1]) - 1
@@ -664,6 +671,7 @@ def get_detailed_ranking_history(price_data_full, benchmark_series_full, risk_fr
     if not history_df.empty: history_df['Streak_Top5'] = pd.Series(top5_streak)
     return history_df
 
+@st.cache_data(max_entries=50, show_spinner=False)
 def get_monthly_rankings(price_data, benchmark_series, risk_free_rate):
     """Menghitung ranking awal bulan lalu dan dua bulan lalu"""
     if len(price_data) < 60:
@@ -705,6 +713,7 @@ def get_monthly_rankings(price_data, benchmark_series, risk_free_rate):
     
     return rank_last_month, rank_two_months_ago
 
+@st.cache_data(max_entries=50, show_spinner=False)
 def get_period_performance_ranking(price_data, trading_days_interval=5, num_periods=10):
     """Menghitung peringkat return absolut melompat secara presisi mengikuti Trading Days"""
     if price_data.empty or len(price_data) < 2: return pd.DataFrame()
@@ -728,6 +737,7 @@ def get_period_performance_ranking(price_data, trading_days_interval=5, num_peri
 
     return period_ranks.T
 
+@st.cache_data(max_entries=50, show_spinner=False)
 def get_monthly_pct_change(price_data):
     """Menghitung persentase perubahan harga akhir bulan (MoM)."""
     if len(price_data) < 2: return pd.DataFrame()
@@ -745,7 +755,7 @@ def get_monthly_pct_change(price_data):
     monthly_returns.index = monthly_returns.index.strftime('%b %Y')
     return monthly_returns.T
 
-
+@st.cache_data(max_entries=50, show_spinner=False)
 def calculate_daily_leaderboard(price_data, days=5):
     """
     Menghitung perubahan peringkat berdasarkan Return absolut menggunakan 
@@ -1188,12 +1198,12 @@ def get_young_funds(df):
         # 3. Hitung umur kalender murni
         if (today - real_inception_date).days <= 365:
             young.append(col)
-            
+             
     return young
 
 young_equities = get_young_funds(df_equity_full)
 young_bonds = get_young_funds(df_bond_full)
-young_all = young_equities + young_bonds
+young_all = tuple(young_equities + young_bonds)
 
 # ==================== EKSTRAK BENCHMARK SERIES ====================
 def get_benchmark_series(ticker, dfs_dict):
@@ -1272,7 +1282,7 @@ else:
     cutoff_days = 252
 
 # MENGIRIM VARIABEL young_all ke fungsi kalkulasi
-metrics_all = calculate_metrics(df_all_instruments, benchmark_series_sliced, risk_free_rate, eval_window=cutoff_days, young_funds_list=young_all)
+metrics_all = calculate_metrics(df_all_instruments, benchmark_series_sliced, risk_free_rate, eval_window=cutoff_days, young_funds_list=young_all, bench_ticker=selected_benchmark_ticker)
 
 if metrics_all is None or metrics_all.empty:
     st.error(f"Gagal menghitung metrik untuk periode {date_option}. Data mungkin tidak mencukupi.")
@@ -1280,11 +1290,11 @@ if metrics_all is None or metrics_all.empty:
 
 metrics_equity = None
 if not df_equity.empty:
-    metrics_equity = calculate_metrics(df_equity, benchmark_series_sliced, risk_free_rate, eval_window=cutoff_days, young_funds_list=young_all)
+    metrics_equity = calculate_metrics(df_equity, benchmark_series_sliced, risk_free_rate, eval_window=cutoff_days, young_funds_list=young_all, bench_ticker=selected_benchmark_ticker)
 
 metrics_bond = None
 if not df_bond.empty:
-    metrics_bond = calculate_metrics(df_bond, benchmark_series_sliced, risk_free_rate, eval_window=cutoff_days, young_funds_list=young_all)
+    metrics_bond = calculate_metrics(df_bond, benchmark_series_sliced, risk_free_rate, eval_window=cutoff_days, young_funds_list=young_all, bench_ticker=selected_benchmark_ticker)
 
 # --- LOGIKA FILTER PEMBOBOTAN DINAMIS ---
 weights_dict = None  # Default (Balanced = dibagi rata 1/25)
@@ -1349,8 +1359,8 @@ with tab_overview:
 
     if not ranked_to_show.empty:
         with st.spinner(f"Mengkalkulasi jejak peringkat 7 hari terakhir untuk {top10_category}..."):
-            history_ranks = get_7d_ranking_history(df_to_show, benchmark_series_sliced, risk_free_rate, eval_window=cutoff_days, custom_weights=weights_dict, young_funds_list=young_all)
-        
+            history_ranks = get_7d_ranking_history(df_to_show, benchmark_series_sliced, risk_free_rate, eval_window=cutoff_days, custom_weights=weights_dict, young_funds_list=young_all, bench_ticker=selected_benchmark_ticker)
+            
         top_10 = ranked_to_show.head(10).reset_index()
         if 'index' in top_10.columns:
             top_10 = top_10.rename(columns={'index': 'Instrument'})
@@ -1397,6 +1407,39 @@ with tab_overview:
                 hide_index=True, 
                 use_container_width=True
             )
+            st.divider()
+    st.subheader(f"📈 Tren Pasar: {selected_benchmark_label}")
+    if not benchmark_series_sliced.empty:
+        # Kalkulasi persentase perubahan dari awal periode untuk keterangan tambahan
+        bench_start_val = benchmark_series_sliced.iloc[0]
+        bench_end_val = benchmark_series_sliced.iloc[-1]
+        bench_pct_change = ((bench_end_val / bench_start_val) - 1) * 100
+        
+        st.caption(f"Pergerakan nilai **{selected_benchmark_label}**.")
+        
+        fig_bench = px.line(
+            x=benchmark_series_sliced.index, 
+            y=benchmark_series_sliced.values
+        )
+        
+        # Penyesuaian layout agar grafik terlihat bersih dan area bawahnya terisi warna (area chart)
+        fig_bench.update_layout(
+            xaxis_title="",
+            yaxis_title="Nilai / Harga",
+            hovermode="x unified",
+            margin=dict(l=0, r=0, t=10, b=0),
+            height=300
+        )
+        fig_bench.update_traces(
+            fill='tozeroy', 
+            line_color='rgba(29, 161, 242, 0.8)', 
+            fillcolor='rgba(29, 161, 242, 0.1)'
+        )
+        
+        st.plotly_chart(fig_bench, use_container_width=True)
+    else:
+        st.warning(f"Data historis untuk benchmark {selected_benchmark_label} tidak tersedia pada rentang waktu ini.")
+    st.divider()
 
 # ==================== TAB 2: LEADERBOARD ====================
 with tab_leaderboard_split:
@@ -1675,7 +1718,7 @@ with tab_performance:
         col_top1, col_top2 = st.columns(2)
             
         with col_top1:
-            st.markdown(f"**🌟 Top 5 Composite Score** (Benchmark: {selected_benchmark_label})")
+            st.markdown(f"**🌟 Top 5 Composite Score** (Benchmark: {selected_bench_label})")
             top5_score = full_performance.sort_values('Total_Score', ascending=False).head(5)
             df_show_score = top5_score[['Total_Score']].copy()
             df_show_score['Total_Score'] = df_show_score['Total_Score'].round(3)
@@ -1766,7 +1809,7 @@ with tab_performance:
         st.divider()
         
         # --- 3. TABEL METRIK & SKOR LENGKAP ---
-        st.subheader(f"📋 Tabel Metrik & Skor Lengkap - {title} (Benchmark: {selected_benchmark_label})")
+        st.subheader(f"📋 Tabel Metrik & Skor Lengkap - {title} (Benchmark: {selected_bench_label})")
         st.caption(f"Fokus Evaluasi: **{scoring_mode}**. Tabel ini menampilkan nilai mentah (raw) dari masing-masing metrik untuk perbandingan langsung.")        
         
         # [Perbaikan]: Menyalin langsung dari metrik mentah lalu menyuntikkan Total Skor agar tidak ada kolom yang terhapus
@@ -1850,7 +1893,7 @@ with tab_performance:
         st.divider()
         
         # --- 3. HEATMAP ANALISIS LANJUTAN (BAWAH) ---
-        st.subheader(f"🔥 Heatmap Analisis Lanjutan - {title} (Benchmark: {selected_benchmark_label})")
+        st.subheader(f"🔥 Heatmap Analisis Lanjutan - {title} (Benchmark: {selected_bench_label})")
         st.caption("Pilih interval lompatan waktu dan jumlah kolom evaluasi. Sistem akan memotong data murni berdasarkan urutan indeks array (Trading Days), menjamin jumlah kolom yang presisi.")
         
         # Panel Kendali Terpadu untuk Heatmap
@@ -1911,8 +1954,9 @@ with tab_performance:
                     df_perf_full, benchmark_series_full, risk_free_rate, 
                     metric_window=cutoff_days, num_columns=num_columns, 
                     custom_weights=weights_dict, trading_days_interval=trading_interval,
-                    young_funds_list=young_all
+                    young_funds_list=young_all, bench_ticker=selected_benchmark_ticker
                 )
+                
                 if not history_score_df.empty and len(history_score_df.columns) > 1:
                     rank_score_data = history_score_df.drop(columns=['Streak_Top5'], errors='ignore')
                     rank_score_data = rank_score_data.sort_values(by=rank_score_data.columns[-1], ascending=True)
@@ -2153,7 +2197,7 @@ with tab_compare:
         
         # Kalkulasi metrik rolling menggunakan dynamic_window yang sama
         df_selected_full = df_all_instruments_full[selected_instruments]
-        dynamic_ts = calculate_rolling_timeseries(df_selected_full, benchmark_series_full, risk_free_rate, window=dynamic_window)
+        dynamic_ts = calculate_rolling_timeseries(df_selected_full, benchmark_series_full, risk_free_rate, window=dynamic_window, bench_ticker=selected_benchmark_ticker)
         sliced_ts_dict = {k: safe_slice(v, ana_start_dt, ana_end_dt) for k, v in dynamic_ts.items()}
         
         ts_data = {}
@@ -2164,17 +2208,17 @@ with tab_compare:
                 
         if ts_data:
             if 'Alpha' in ts_data and not ts_data['Alpha'].empty:
-                fig_alpha = px.line(ts_data['Alpha'], title=f"Pergerakan Alpha dengan Benchmark {selected_benchmark_label} ({dynamic_window} Hari)")
+                fig_alpha = px.line(ts_data['Alpha'], title=f"Pergerakan Alpha dengan Benchmark {selected_bench_label} ({dynamic_window} Hari)")
                 fig_alpha.update_layout(xaxis_title="Tanggal", yaxis_title="Alpha", legend=legend_layout)
                 st.plotly_chart(fig_alpha, use_container_width=True)
                 
             if 'Beta' in ts_data and not ts_data['Beta'].empty:
-                fig_beta = px.line(ts_data['Beta'], title=f"Pergerakan Beta dengan Benchmark {selected_benchmark_label} ({dynamic_window} Hari)")
+                fig_beta = px.line(ts_data['Beta'], title=f"Pergerakan Beta dengan Benchmark {selected_bench_label} ({dynamic_window} Hari)")
                 fig_beta.update_layout(xaxis_title="Tanggal", yaxis_title="Beta", legend=legend_layout)
                 st.plotly_chart(fig_beta, use_container_width=True)
                 
             if 'Sharpe_Ratio' in ts_data and not ts_data['Sharpe_Ratio'].empty:
-                fig_sharpe = px.line(ts_data['Sharpe_Ratio'], title=f"Pergerakan Sharpe Ratio dengan Benchmark {selected_benchmark_label} ({dynamic_window} Hari)")
+                fig_sharpe = px.line(ts_data['Sharpe_Ratio'], title=f"Pergerakan Sharpe Ratio dengan Benchmark {selected_bench_label} ({dynamic_window} Hari)")
                 fig_sharpe.update_layout(xaxis_title="Tanggal", yaxis_title="Sharpe Ratio", legend=legend_layout)
                 st.plotly_chart(fig_sharpe, use_container_width=True)
                 
