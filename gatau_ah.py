@@ -140,7 +140,7 @@ def run_daily_sync(start_date, end_date):
         payload = df_clean.to_dict(orient='records')
         for i in range(0, len(payload), 1000):
             try: supabase.table(table_name).upsert(payload[i:i+1000]).execute()
-            except Exception as e: st.warning(f"Gagal sync batch {i}: {e}")
+            except: pass
 
     mf_master, bond_master, macro_master = load_master_instruments()
 
@@ -150,8 +150,7 @@ def run_daily_sync(start_date, end_date):
         try:
             df_mf = rd.get_data(universe=tickers_mf[i:i+15], fields=['TR.NETASSETVAL.date', 'TR.NETASSETVAL'], parameters=params)
             process_and_upload(df_mf, "mf_nav_daily", ["nav"], {'Instrument': 'ticker', 'Date': 'date', 'TR.NETASSETVAL.date': 'date', 'TR.NETASSETVAL': 'nav', 'Net Asset Value': 'nav'})
-        except Exception as e:
-            st.warning(f"Gagal sync Reksa Dana batch {i}: {e}")
+        except: pass
 
     # 2. Sync Obligasi
     tickers_bonds = [x['isin_code'] for x in bond_master]
@@ -160,8 +159,7 @@ def run_daily_sync(start_date, end_date):
             df_bonds = rd.get_data(universe=tickers_bonds[i:i+20], fields=['TR.ASKPRICE.date', 'TR.ASKPRICE', 'TR.ASKYIELD'], parameters=params)
             mapping_bonds = {'Instrument': 'isin_code', 'Date': 'date', 'Ask Price': 'ask_price', 'Ask Yield': 'ask_yield', 'TR.ASKPRICE.date': 'date', 'TR.ASKPRICE': 'ask_price', 'TR.ASKYIELD': 'ask_yield'}
             process_and_upload(df_bonds, "gov_bonds_prices_daily", ["ask_price", "ask_yield"], mapping_bonds)
-        except Exception as e:
-            st.warning(f"Gagal sync Obligasi batch {i}: {e}")
+        except: pass
         
     # (Untuk Macro di run_daily_sync tetap sama seperti kode sebelumnya, cukup gunakan macro_master)
 
@@ -178,7 +176,7 @@ def run_daily_sync(start_date, end_date):
             mapping_mac = {'Instrument': 'ticker', 'Date': 'date', fields[0]: 'date', fields[1]: 'value', 'Price Close': 'value', 'TR.PriceClose': 'value', 'Close Price': 'value', 'TR.ClosePrice': 'value', 'America Close Bid Price': 'value', 'America  Close Bid Price': 'value', 'cLOSE Price': 'value', 'TR.AmericaCloseBidPrice': 'value'}
             process_and_upload(df_mac, "macro_daily", ["value"], mapping_mac)
         except: pass
-  
+
 def backfill_new_instrument(table_dest, id_col, ticker, fields, value_cols, rename_mapping):
     """Fungsi mandiri untuk menarik data 25 tahun ke belakang (2000-01-01) untuk 1 instrumen baru"""
     start_str = "2000-01-01"
@@ -300,19 +298,37 @@ def load_all_data(start_date, end_date, currency='IDR'):
         st.error("Data Equity kosong di database untuk mata uang ini.")
         st.stop()
 
-    master_dates = df_equity_wide.index
+    # --- PEMBERSIH ZOMBIE DAYS ---
+    def clean_trading_days(df):
+        """Sebuah hari diakui sebagai hari bursa jika ADA minimal 1 produk yang update harga."""
+        if df.empty: return df
+        df_filled = df.ffill()
+        pct = df_filled.pct_change()
+        
+        valid_days = pct.isna().all(axis=1) | ((pct.abs() > 0).sum(axis=1) > 0)
+        return df.loc[valid_days]
+
+    # 1. Bersihkan data Equity dan Bond secara mandiri (Independen)
+    df_equity_wide = clean_trading_days(df_equity_wide)
+    df_bond_wide = clean_trading_days(df_bond_wide)
+    
+    # 2. GABUNGKAN KALENDER (Union): Jangan biarkan Equity mendikte Bond
+    # Jika Equity libur tapi Bond jalan (atau sebaliknya), tanggal tetap diakui.
+    master_dates = df_equity_wide.index.union(df_bond_wide.index).sort_values()
+
     def align_wide_df(df_wide):
-        return df_wide.reindex(master_dates).ffill() if not df_wide.empty else df_wide
+        if df_wide.empty: return df_wide
+        # 3. Selaraskan semua data ke kalender gabungan
+        return df_wide.reindex(master_dates).ffill()
 
     return {
-        'equity': df_equity_wide, 'bond': align_wide_df(df_bond_wide),
+        'equity': align_wide_df(df_equity_wide), 'bond': align_wide_df(df_bond_wide),
         'index': align_wide_df(df_index_wide), 'suku_bunga': align_wide_df(df_suku_bunga_wide),
         'mata_uang': align_wide_df(df_mata_uang_wide), 'komoditas': align_wide_df(df_komoditas_wide),
         'gov_bonds_price': align_wide_df(df_gov_bonds_price), 'gov_bonds_yield': align_wide_df(df_gov_bonds_yield)
     }, start_date, end_date
 
 # ==================== FUNGSI UNTUK MENGHITUNG METRIK DAN SKOR ====================
-@st.cache_data(ttl=3600, show_spinner="Menghitung Metrik Finansial...")
 def calculate_metrics(price_data, benchmark_series, risk_free_rate, eval_window=None):
     price_data = price_data.dropna(axis=1, how='all')
     price_data = price_data.ffill().bfill()
@@ -532,7 +548,6 @@ def calculate_metrics(price_data, benchmark_series, risk_free_rate, eval_window=
     
     return metrics_df
 
-@st.cache_data(ttl=3600, show_spinner="Menghitung Time-Series Metrik...")
 def calculate_rolling_timeseries(price_data, benchmark_series, risk_free_rate, window=63):
     returns = price_data.pct_change().dropna(how='all')
     bench_returns = benchmark_series.pct_change().dropna()
@@ -565,7 +580,6 @@ def calculate_rolling_timeseries(price_data, benchmark_series, risk_free_rate, w
         'Volatility': volatility_ts
     }
 
-@st.cache_data(ttl=3600, show_spinner="Kalkulasi Skor Komposit...")
 def calculate_ranking_scores(metrics_df, weights=None):
     """Menghitung skor komposit dari 25 metrik (termasuk 4 metrik momentum perpindahan peringkat)."""
     # Bobot disebar rata ke 25 metrik (1/25 atau ~4.16% per metrik)
@@ -634,22 +648,16 @@ def get_7d_ranking_history(price_data, benchmark_series, risk_free_rate, eval_wi
                 
     return pd.DataFrame(history_ranks)
 
-@st.cache_data(ttl=3600, show_spinner="Menghitung History Ranking...")
 def get_detailed_ranking_history(price_data_full, benchmark_series_full, risk_free_rate, metric_window, num_columns=10, custom_weights=None, trading_days_interval=1):
     """Menghitung history ranking komposit dengan lompatan akurat berbasis Index Array (Trading Days)"""
-    if len(price_data_full) < 1:
-        return pd.DataFrame()
+    if len(price_data_full) < 1: return pd.DataFrame()
     
-    # Hitung total data historis yang dibutuhkan
     total_points_needed = (num_columns - 1) * trading_days_interval + 1
     if len(price_data_full) < total_points_needed:
-        # Jika data kurang, paksa sesuaikan jumlah kolom maksimal yang bisa dibuat
         num_columns = (len(price_data_full) - 1) // trading_days_interval + 1
         if num_columns < 1: return pd.DataFrame()
         
-    # Ambil titik evaluasi dengan melompat persis sesuai interval dari array paling belakang
     eval_dates = price_data_full.iloc[::-trading_days_interval].head(num_columns).index[::-1]
-    
     history_ranks = {}
     top5_streak = {}
     
@@ -660,19 +668,28 @@ def get_detailed_ranking_history(price_data_full, benchmark_series_full, risk_fr
         sliced_prices = price_data_full.iloc[idx_start:idx_today+1]
         sliced_bench = benchmark_series_full.iloc[idx_start:idx_today+1]
         
-        if len(sliced_prices) < 10: 
-            continue
+        if len(sliced_prices) < 10: continue
             
         metrics = calculate_metrics(sliced_prices, sliced_bench, risk_free_rate)
         if metrics is not None and not metrics.empty:
+            
+            # --- ELIMINASI INSTRUMEN DELAY (KHUSUS INTERVAL HARIAN) ---
+            if idx_today > 0 and trading_days_interval == 1:
+                daily_pct = (price_data_full.iloc[idx_today] / price_data_full.iloc[idx_today-1]) - 1
+                stagnant_instruments = daily_pct[daily_pct == 0.0].index
+                # Hapus dari penilaian agar tidak mendapat peringkat palsu
+                metrics = metrics.drop(index=stagnant_instruments, errors='ignore')
+
+            if metrics.empty: continue
+
             ranks = calculate_ranking_scores(metrics, weights=custom_weights)
             if not ranks.empty:
                 rank_series = pd.Series(range(1, len(ranks) + 1), index=ranks.index)
-                date_str = date.strftime('%d/%m/%y') # Pakai format tahun agar tidak duplikat
+                date_str = date.strftime('%d/%m/%y') 
                 history_ranks[date_str] = rank_series
                 
                 top5_today = set(rank_series[rank_series <= 5].index)
-                for product in rank_series.index:
+                for product in price_data_full.columns:
                     if product not in top5_streak: top5_streak[product] = 0
                     if product in top5_today: top5_streak[product] += 1
                     else: top5_streak[product] = 0
@@ -681,7 +698,7 @@ def get_detailed_ranking_history(price_data_full, benchmark_series_full, risk_fr
     if not history_df.empty:
         history_df['Streak_Top5'] = pd.Series(top5_streak)
     
-    return history_df   
+    return history_df
 
 def get_monthly_rankings(price_data, benchmark_series, risk_free_rate):
     """Menghitung ranking awal bulan lalu dan dua bulan lalu"""
@@ -724,24 +741,23 @@ def get_monthly_rankings(price_data, benchmark_series, risk_free_rate):
     
     return rank_last_month, rank_two_months_ago
 
-@st.cache_data(ttl=3600, show_spinner="Menghitung Peringkat Performa Periodik...")
 def get_period_performance_ranking(price_data, trading_days_interval=5, num_periods=10):
     """Menghitung peringkat return absolut melompat secara presisi mengikuti Trading Days"""
-    if price_data.empty or len(price_data) < 2: 
-        return pd.DataFrame()
+    if price_data.empty or len(price_data) < 2: return pd.DataFrame()
 
     total_points_needed = num_periods * trading_days_interval + 1
     if len(price_data) < total_points_needed:
         num_periods = (len(price_data) - 1) // trading_days_interval
         if num_periods < 1: return pd.DataFrame()
 
-    # Ekstrak mundur dari array dengan jeda (step) sesuai trading interval
     sliced_prices = price_data.iloc[::-trading_days_interval].head(num_periods + 1).iloc[::-1]
-    
     period_returns = sliced_prices.pct_change().dropna(how='all')
 
-    if period_returns.empty: 
-        return pd.DataFrame()
+    # --- ELIMINASI NOL UNTUK INTERVAL HARIAN ---
+    if trading_days_interval == 1:
+        period_returns = period_returns.replace(0.0, np.nan)
+
+    if period_returns.empty: return pd.DataFrame()
 
     period_ranks = period_returns.rank(axis=1, ascending=False, method='min')
     period_ranks.index = period_ranks.index.strftime('%d/%m/%y')
@@ -752,57 +768,38 @@ def get_monthly_pct_change(price_data):
     """Menghitung persentase perubahan harga akhir bulan (MoM)."""
     if len(price_data) < 2: return pd.DataFrame()
     
-    # Sampling ke data akhir bulan (Kompatibel untuk Pandas versi lama dan baru)
     try:
         monthly_prices = price_data.resample('ME').last()
     except:
         monthly_prices = price_data.resample('M').last()
         
-    # Kalkulasi return persentase
     monthly_returns = monthly_prices.pct_change().dropna(how='all') * 100
     
-    # Format tanggal menjadi format Bulan Tahun
+    # --- ELIMINASI NOL ---
+    monthly_returns = monthly_returns.replace(0.0, np.nan)
+    
     monthly_returns.index = monthly_returns.index.strftime('%b %Y')
     return monthly_returns.T
+
 
 def calculate_daily_leaderboard(price_data, days=5):
     """
     Menghitung perubahan peringkat berdasarkan Return absolut menggunakan 
-    pendekatan Hari Kalender (Calendar Days) sesuai standar Refinitiv.
+    posisi hari bursa (Trading Days).
     """
-    if price_data.empty or len(price_data) < 2:
+    # Pastikan data cukup panjang untuk menghindari error iloc
+    if price_data.empty or len(price_data) < (days + 2):
         return pd.DataFrame()
 
-    today_date = price_data.index[-1]
-    yesterday_date = price_data.index[-2]
+    # [PERBAIKAN KUNCI]: Forward fill untuk menambal data NAV USD yang delay 
+    # agar tidak menjadi NaN di baris terakhir saat kalkulasi.
+    price_data = price_data.ffill()
 
-    # Mundur persis 'days' kalender absolut (misal 5 hari kalender)
+    # Kalkulasi Return Hari Ini vs 'days' hari bursa lalu
+    returns_today = (price_data.iloc[-1] / price_data.iloc[-(days + 1)]) - 1
     
-    target_N_days_ago = today_date - pd.Timedelta(days=days)
-    target_N_plus_1_days_ago = yesterday_date - pd.Timedelta(days=days)
-    # Cari indeks baris untuk tanggal hari ini dan kemarin
-    idx_today = price_data.index.get_loc(today_date)
-    idx_yesterday = price_data.index.get_loc(yesterday_date)
-    
-    # Cari indeks baris untuk N hari lalu. method='pad' (ffill) memastikan 
-    # jika target jatuh di hari libur, ia mengambil hari bursa terdekat sebelumnya.
-    idx_N_ago = price_data.index.get_indexer([target_N_days_ago], method='pad')[0]
-    idx_N_plus_1_ago = price_data.index.get_indexer([target_N_plus_1_days_ago], method='pad')[0]
-
-    # Batalkan jika data historis tidak cukup panjang untuk mundur ke target kalender
-    if idx_N_ago == -1 or idx_N_plus_1_ago == -1:
-        return pd.DataFrame()
-
-    # Ekstrak harga menggunakan indeks
-    price_today = price_data.iloc[idx_today]
-    price_yesterday = price_data.iloc[idx_yesterday]
-    
-    price_N_ago = price_data.iloc[idx_N_ago].replace(0, np.nan)
-    price_N_plus_1_ago = price_data.iloc[idx_N_plus_1_ago].replace(0, np.nan)
-
-    # Hitung return point-to-point
-    returns_today = (price_data.iloc[-1] / price_data.iloc[-1 - days]) - 1
-    returns_yesterday = (price_data.iloc[-2] / price_data.iloc[-2 - days]) - 1
+    # Kalkulasi Return Kemarin vs 'days' hari bursa sebelum kemarin
+    returns_yesterday = (price_data.iloc[-2] / price_data.iloc[-(days + 2)]) - 1
 
     # Format dataframe hari ini
     col_return_name = f'Return_{days}d'
@@ -817,7 +814,7 @@ def calculate_daily_leaderboard(price_data, days=5):
     df_yesterday = df_yesterday.dropna()
     df_yesterday['Rank_Yesterday'] = df_yesterday['Return_Yesterday'].rank(ascending=False, method='min')
 
-    # Gabungkan data dan kalkulasi perubahan
+    # Gabungkan data dan kalkulasi perubahan peringkat
     leaderboard = pd.merge(df_today, df_yesterday[['Instrument', 'Rank_Yesterday']], on='Instrument', how='left')
     leaderboard['Rank_Change'] = leaderboard['Rank_Yesterday'] - leaderboard['Rank_Today']
     leaderboard['Rank_Change'] = leaderboard['Rank_Change'].fillna(0)
@@ -909,37 +906,53 @@ with st.sidebar:
     st.divider()
 
     # ==========================================
-    # BLOK SINKRONISASI UTAMA (DELTA LOAD)
+    # BLOK KONEKSI & SINKRONISASI DATA
     # ==========================================
-    st.subheader("🔄 Sinkronisasi Data API")
-    st.caption("Tarik data yang tertinggal dari Refinitiv ke Database.")
-    if st.button("Sinkronisasi Refinitiv", type="primary", use_container_width=True):
-        with st.spinner("Mengecek instrumen yang tertinggal di database..."):
-            
-            start_d = get_sync_start_date() # Memakai logika cerdas baru
-            end_d = dt.datetime.today().date()
-            
-            if start_d >= end_d:
-                st.info("✅ Database sudah mutakhir (Hari ini).")
-                st.rerun()
-            else:
-                st.write(f"Menarik delta data: **{start_d.strftime('%d %b %Y')}** s/d **{end_d.strftime('%d %b %Y')}**")
-                
+    st.subheader("🔄 Koneksi & Update Data")
+    
+    # Indikator Status Koneksi API
+    if st.session_state.connected:
+        st.success("✅ Terhubung ke API Refinitiv")
+    else:
+        st.warning("⚠️ API Refinitiv Belum Terhubung")
+
+    col_btn1, col_btn2 = st.columns(2)
+    
+    with col_btn1:
+        # 1. TOMBOL KONEKSI
+        if st.button("🔌 Connect", use_container_width=True):
+            with st.spinner("Menghubungkan..."):
                 if init_refinitiv_session():
+                    st.session_state.connected = True
+                    st.rerun()
+                else:
+                    st.error("Koneksi gagal.")
+                    
+    with col_btn2:
+        # 2. TOMBOL UPDATE DATA (Aktif hanya jika sudah connect)
+        if st.button("📥 Update", type="primary", use_container_width=True, disabled=not st.session_state.connected):
+            with st.spinner("Mengecek data tertinggal..."):
+                start_d = get_sync_start_date() 
+                end_d = dt.datetime.today().date()
+                
+                if start_d >= end_d:
+                    st.info("✅ Database sudah mutakhir.")
+                else:
+                    st.write(f"Menarik: **{start_d.strftime('%d/%m/%y')}** - **{end_d.strftime('%d/%m/%y')}**")
                     try:
                         run_daily_sync(start_d, end_d)
                         st.session_state.end_date = end_d
                         
-                        st.success("Sinkronisasi berhasil! Database diupdate.")
+                        # --- TAMBAHKAN BARIS INI ---
+                        load_all_data.clear() 
+                        # ---------------------------
+                        
+                        st.success("Berhasil diupdate!")
                         time.sleep(1.5)
-                        # Aplikasi akan memuat ulang dan langsung membaca dari database yang baru diupdate
-                        st.rerun() 
+                        st.rerun()
                     except Exception as e:
-                        st.error(f"❌ Sinkronisasi Gagal: {e}")
-                else:
-                    st.error("Gagal terhubung ke API Refinitiv.")
-
-    st.divider()
+                        st.error(f"❌ Update Gagal: {e}")
+                
     
     # Manajemen Produk Kustom (hanya untuk IDR)
    # ==========================================
@@ -1303,7 +1316,7 @@ with tab_overview:
     with col4:
         st.metric("Risk-Free Rate", f"{risk_free_rate*100:.2f}%")
 
-    st.subheader("Top 10 Produk (Skor Tertinggi & Riwayat Peringkat 7 Hari)")
+    st.subheader("Top 10 Produk (Skor Tertinggi & Riwayat Peringkat Skor 7 Hari)")
     
     # Tambahkan Radio Button untuk memisah kategori
     top10_category = st.radio("Pilih Kategori Produk:", ["Equity", "Fixed Income"], horizontal=True, key="top10_radio")
@@ -1360,7 +1373,7 @@ with tab_leaderboard_split:
     
     if not df_lb.empty:
         # UBAH: Panggil dengan days=5
-        leaderboard = calculate_daily_leaderboard(df_lb, days=5)
+        leaderboard = calculate_daily_leaderboard(df_equity_full if lb_type == "Equity" else df_bond_full, days=5)
         if not leaderboard.empty:
             leaderboard['Change_Color'] = leaderboard['Rank_Change'].apply(
                 lambda x: '🚀 Top Climber' if x > 0 else ('📉 Top Laggard' if x < 0 else 'Stabil')
@@ -1388,15 +1401,7 @@ with tab_leaderboard_split:
                     st.info("Tidak ada top laggards dalam periode ini.")
 
             st.subheader(f"📋 Leaderboard Lengkap Return 5 Hari {title}")
-            
-            # Highlight Kuning untuk tabel Leaderboard
-            df_lb_sorted = leaderboard_display.sort_values('Rank_Today')
-            def highlight_lb_young(row):
-                if row['Instrument'] in young_all:
-                    return ['background-color: rgba(255, 215, 0, 0.2)'] * len(row) # Warna kuning stabilo transparan
-                return [''] * len(row)
-                
-            st.dataframe(df_lb_sorted.style.apply(highlight_lb_young, axis=1), hide_index=True, use_container_width=True)
+            st.dataframe(leaderboard_display.sort_values('Rank_Today'), hide_index=True, use_container_width=True)
             
             st.subheader(f"💡 Produk Performa Terbaik Selama 5 Hari {title}")
             top_3 = leaderboard_display.nsmallest(3, 'Rank_Today')
@@ -1415,36 +1420,64 @@ with tab_leaderboard_split:
             
             # ================= TAMBAHAN SEGMEN PERINGKAT HARIAN =================
             st.divider()
-            st.subheader(f"⚡ Peringkat Harian (Daily % Change) - {title}")
             
-            if len(df_lb) >= 2:
-                # 1. Ekstrak NAV hari ini dan kemarin
-                price_today_lb = df_lb.iloc[-1]
-                price_yesterday_lb = df_lb.iloc[-2].replace(0, np.nan)
+            df_daily_full = df_equity_full if lb_type == "Equity" else df_bond_full
+            
+            if not df_daily_full.empty and len(df_daily_full) >= 2:
+                df_daily_full = df_daily_full.ffill()
                 
-                # 2. Hitung Persentase Perubahan
-                daily_pct_lb = ((price_today_lb / price_yesterday_lb) - 1) * 100
+                # 1. PROTEKSI HARI LIBUR & WEEKEND
+                # Cek pergerakan harga. Jika yang bergerak kurang dari 3 produk, anggap pasar libur
+                pct_change_all = df_daily_full.pct_change()
+                valid_trading_days = df_daily_full.loc[(pct_change_all.abs() > 0).sum(axis=1) > 2]
                 
-                # 3. Format DataFrame Peringkat
-                df_daily_lb = daily_pct_lb.reset_index()
-                df_daily_lb.columns = ['Instrument', 'Daily_%_Change']
-                df_daily_lb = df_daily_lb.dropna().sort_values('Daily_%_Change', ascending=False)
-                df_daily_lb['Rank'] = range(1, len(df_daily_lb) + 1)
-                
-                # 4. Format teks angka untuk ditampilkan
-                df_daily_display = df_daily_lb[['Rank', 'Instrument', 'Daily_%_Change']].copy()
-                df_daily_display['Daily_%_Change'] = df_daily_display['Daily_%_Change'].round(2).astype(str) + '%'
-                
-                col_d1, col_d2 = st.columns(2)
-                with col_d1:
-                    st.markdown("Top Performers (Gainers Harian)")
-                    st.dataframe(df_daily_display.head(10), hide_index=True, use_container_width=True)
-                with col_d2:
-                    st.markdown("Bottom Performers (Losers Harian)")
-                    # Diurutkan terbalik agar produk dengan penurunan terdalam ada di baris pertama
-                    df_losers = df_daily_lb.tail(10).sort_values('Daily_%_Change', ascending=True).copy()
-                    df_losers['Daily_%_Change'] = df_losers['Daily_%_Change'].round(2).astype(str) + '%'
-                    st.dataframe(df_losers[['Rank', 'Instrument', 'Daily_%_Change']], hide_index=True, use_container_width=True)
+                if len(valid_trading_days) >= 2:
+                    # Ambil hari bursa aktif terakhir dan sebelumnya
+                    price_today_lb = valid_trading_days.iloc[-1]
+                    price_yesterday_lb = valid_trading_days.iloc[-2].replace(0, np.nan)
+                    
+                    # Ekstrak Tanggal untuk dimunculkan di layar
+                    date_today_str = valid_trading_days.index[-1].strftime('%d %b %Y')
+                    date_yesterday_str = valid_trading_days.index[-2].strftime('%d %b %Y')
+                    
+                    st.subheader(f"⚡ Peringkat Harian (Daily % Change) - {title}")
+                    st.caption(f"🗓️ Membandingkan penutupan: **{date_today_str}** vs **{date_yesterday_str}**")
+                    
+                    # 2. Hitung Persentase Perubahan
+                    daily_pct_lb = ((price_today_lb / price_yesterday_lb) - 1) * 100
+                    
+                    # 3. Format DataFrame Peringkat
+                    df_daily_lb = daily_pct_lb.reset_index()
+                    df_daily_lb.columns = ['Instrument', 'Daily_%_Change']
+                    
+                    # ELIMINASI: Buang produk yang persis 0.0 (artinya MI belum rilis NAV terbaru)
+                    df_daily_lb = df_daily_lb.dropna()
+                    df_daily_lb = df_daily_lb[df_daily_lb['Daily_%_Change'] != 0.0]
+                    
+                    df_daily_lb = df_daily_lb.sort_values('Daily_%_Change', ascending=False)
+                    df_daily_lb['Rank'] = range(1, len(df_daily_lb) + 1)
+                    
+                    # 4. Format teks angka
+                    df_daily_display = df_daily_lb[['Rank', 'Instrument', 'Daily_%_Change']].copy()
+                    df_daily_display['Daily_%_Change'] = df_daily_display['Daily_%_Change'].round(2).astype(str) + '%'
+                    
+                    col_d1, col_d2 = st.columns(2)
+                    with col_d1:
+                        st.markdown("**Top Performers (Gainers)**")
+                        if not df_daily_display.empty:
+                            st.dataframe(df_daily_display.head(10), hide_index=True, use_container_width=True)
+                        else:
+                            st.info("Belum ada produk yang naik.")
+                    with col_d2:
+                        st.markdown("**Bottom Performers (Losers)**")
+                        if not df_daily_display.empty:
+                            df_losers = df_daily_lb.tail(10).sort_values('Daily_%_Change', ascending=True).copy()
+                            df_losers['Daily_%_Change'] = df_losers['Daily_%_Change'].round(2).astype(str) + '%'
+                            st.dataframe(df_losers[['Rank', 'Instrument', 'Daily_%_Change']], hide_index=True, use_container_width=True)
+                        else:
+                            st.info("Belum ada produk yang turun.")
+                else:
+                    st.warning("Data hari bursa aktif tidak mencukupi.")
             else:
                 st.warning("Data historis tidak cukup untuk menghitung perubahan harian.")
     else:
@@ -2118,10 +2151,11 @@ with tab_compare:
 # ==================== TAB 6: GRAFIK OBLIGASI NEGARA ====================
 with tab_gov_bonds:
     st.header("🏛️ Grafik Obligasi Negara (SBN/SUN/Sukuk)")
-    st.info("Visualisasi historis Harga Penawaran (Ask Price) dan Imbal Hasil (Ask Yield) pada interval analisis.")
     
-    if not df_gov_bonds_price.empty:
-        available_gov_bonds = df_gov_bonds_price.columns.tolist()
+    # Gunakan data utuh (_full) agar rentang waktu bisa ditarik independen dari sidebar
+    if not df_gov_bonds_price_full.empty:
+        available_gov_bonds = df_gov_bonds_price_full.columns.tolist()
+        
         selected_gov_bonds = st.multiselect(
             "Pilih Seri Obligasi untuk Ditampilkan:",
             options=available_gov_bonds,
@@ -2130,35 +2164,135 @@ with tab_gov_bonds:
         )
         
         if selected_gov_bonds:
-            legend_layout_gov = dict(orientation="h", yanchor="top", y=-0.2, xanchor="center", x=0.5, title=None)
-            
-            # --- GRAFIK HARGA (PRICE) ---
-            df_gov_price_plot = df_gov_bonds_price[selected_gov_bonds].copy()
-            df_gov_price_plot = df_gov_price_plot.ffill().bfill()
-            
-            fig_price = px.line(df_gov_price_plot, x=df_gov_price_plot.index, y=df_gov_price_plot.columns, title="Pergerakan Harga Ask Obligasi")
-            fig_price.update_layout(xaxis_title="Tanggal", yaxis_title="Ask Price", legend=legend_layout_gov, hovermode="x unified")
-            st.plotly_chart(fig_price, use_container_width=True)
-
             st.divider()
-
-            # --- GRAFIK IMBAL HASIL (YIELD) ---
-            if not df_gov_bonds_yield.empty:
-                df_gov_yield_plot = df_gov_bonds_yield[selected_gov_bonds].copy()
-                df_gov_yield_plot = df_gov_yield_plot.ffill().bfill()
+            
+            # --- PANEL KONTROL WAKTU ---
+            st.subheader("⏱️ Kontrol Rentang & Jarak Waktu")
+            col_t1, col_t2 = st.columns(2)
+            with col_t1:
+                interval_mapping = {
+                    "Harian (1D)": "1D", "5 Hari (5D)": "5D", "10 Hari (10D)": "10D",
+                    "1 Bulan (1M)": "1M", "3 Bulan (3M)": "3M", "6 Bulan (6M)": "6M",
+                    "1 Tahun (1Y)": "1Y", "3 Tahun (3Y)": "3Y", "5 Tahun (5Y)": "5Y",
+                    "10 Tahun (10Y)": "10Y"
+                }
+                selected_label_gran = st.selectbox("Interval Grafik Mentah (Granularitas):", list(interval_mapping.keys()), index=0, key="bond_granularity")
+                gran_code = interval_mapping[selected_label_gran]
                 
-                fig_yield = px.line(df_gov_yield_plot, x=df_gov_yield_plot.index, y=df_gov_yield_plot.columns, title="Pergerakan Ask Yield (%)")
-                fig_yield.update_layout(xaxis_title="Tanggal", yaxis_title="Ask Yield (%)", legend=legend_layout_gov, hovermode="x unified")
-                st.plotly_chart(fig_yield, use_container_width=True)
+            with col_t2:
+                yield_options = {"YTD": "YTD", "1 Bulan": "1M", "3 Bulan": "3M", "6 Bulan": "6M", "1 Tahun": "1Y", "2 Tahun": "2Y", "3 Tahun": "3Y", "5 Tahun": "5Y"}
+                selected_label_rebase = st.selectbox("Rentang Waktu Grafik Persentase (Rebasing):", list(yield_options.keys()), index=4, key="bond_rebase")
+                rebase_code = yield_options[selected_label_rebase]
+
+            # --- FUNGSI PEMBANTU (HELPER FUNCTIONS) ---
+            def apply_granularity(df, code):
+                if df.empty or code == "1D": return df
+                if code == "5D": return df.iloc[::-5][::-1]
+                if code == "10D": return df.iloc[::-10][::-1]
+                
+                resample_new = {"1M": "ME", "3M": "3ME", "6M": "6ME", "1Y": "YE", "3Y": "3YE", "5Y": "5YE", "10Y": "10YE"}
+                resample_old = {"1M": "M", "3M": "3M", "6M": "6M", "1Y": "Y", "3Y": "3Y", "5Y": "5Y", "10Y": "10Y"}
+                try: return df.resample(resample_new[code]).last().dropna(how='all')
+                except: return df.resample(resample_old[code]).last().dropna(how='all')
+
+            def apply_rebasing(df, y_code):
+                if df.empty: return pd.DataFrame()
+                latest_date = df.index.max()
+                if y_code == "YTD": start_date = pd.Timestamp(latest_date.year, 1, 1)
+                elif "M" in y_code: start_date = latest_date - pd.DateOffset(months=int(y_code.replace("M", "")))
+                elif "Y" in y_code: start_date = latest_date - pd.DateOffset(years=int(y_code.replace("Y", "")))
+                else: start_date = df.index.min()
+
+                df_sliced = df.loc[start_date:latest_date].copy()
+                if not df_sliced.empty and len(df_sliced) > 1:
+                    df_rebased = (df_sliced / df_sliced.iloc[0]) - 1
+                    return df_rebased * 100
+                return pd.DataFrame()
+
+            def add_end_annotations(fig, df_plot):
+                if df_plot.empty: return fig
+                line_colors = {trace.name: trace.line.color for trace in fig.data}
+                last_date = df_plot.index[-1]
+                for col in df_plot.columns:
+                    last_val = df_plot[col].dropna().iloc[-1] if not df_plot[col].dropna().empty else None
+                    if last_val is not None:
+                        bg_color = line_colors.get(col, "gray")
+                        fig.add_annotation(
+                            x=last_date, y=last_val, text=f"<b>{last_val:.2f}%</b>",
+                            showarrow=False, xanchor="left", xshift=8, 
+                            font=dict(size=11, color="white"), bgcolor=bg_color, borderpad=3, opacity=0.9
+                        )
+                fig.update_layout(margin=dict(r=70))
+                return fig
+
+            legend_layout_gov = dict(orientation="h", yanchor="top", y=-0.2, xanchor="center", x=0.5, title=None)
+
+            # Tarik data utuh untuk instrumen terpilih dan tambal data bolong
+            df_price_raw = df_gov_bonds_price_full[selected_gov_bonds].ffill().bfill()
+            df_yield_raw = df_gov_bonds_yield_full[selected_gov_bonds].ffill().bfill() if not df_gov_bonds_yield_full.empty else pd.DataFrame()
+
+            # ==========================================
+            # SEGMEN 1: ASK PRICE (HARGA PENAWARAN)
+            # ==========================================
+            st.divider()
+            st.subheader("📊 Analisis Harga Obligasi (Ask Price)")
+            
+            tab_p1, tab_p2 = st.tabs(["1. Harga Mentah (Granularitas)", "2. Persentase Kenaikan (Rebasing)"])
+            
+            with tab_p1:
+                df_p_gran = apply_granularity(df_price_raw, gran_code)
+                fig_p1 = px.line(df_p_gran, x=df_p_gran.index, y=df_p_gran.columns, title=f"Harga Aktual - Interval {selected_label_gran}")
+                if gran_code != "1D": fig_p1.update_traces(mode='lines+markers')
+                fig_p1.update_layout(xaxis_title="Tanggal", yaxis_title="Ask Price", legend=legend_layout_gov, hovermode="x unified")
+                st.plotly_chart(fig_p1, use_container_width=True)
+
+            with tab_p2:
+                df_p_rebase = apply_rebasing(df_price_raw, rebase_code)
+                if not df_p_rebase.empty:
+                    fig_p2 = px.line(df_p_rebase, x=df_p_rebase.index, y=df_p_rebase.columns, title=f"Persentase Kenaikan Harga ({selected_label_rebase})")
+                    fig_p2.add_hline(y=0, line_dash="dash", line_color="gray", opacity=0.5)
+                    fig_p2.update_yaxes(ticksuffix="%")
+                    fig_p2 = add_end_annotations(fig_p2, df_p_rebase)
+                    fig_p2.update_layout(xaxis_title="Tanggal", yaxis_title="Perubahan Harga (%)", legend=legend_layout_gov, hovermode="x unified")
+                    st.plotly_chart(fig_p2, use_container_width=True)
+                else:
+                    st.warning("Data tidak mencukupi untuk Rebasing.")
+
+            # ==========================================
+            # SEGMEN 2: ASK YIELD (IMBAL HASIL)
+            # ==========================================
+            st.divider()
+            st.subheader("📉 Analisis Imbal Hasil (Ask Yield)")
+            
+            if not df_yield_raw.empty:
+                tab_y1, tab_y2 = st.tabs(["1. Yield Mentah (Granularitas)", "2. Persentase Perubahan (Rebasing)"])
+                
+                with tab_y1:
+                    df_y_gran = apply_granularity(df_yield_raw, gran_code)
+                    fig_y1 = px.line(df_y_gran, x=df_y_gran.index, y=df_y_gran.columns, title=f"Yield Aktual (%) - Interval {selected_label_gran}")
+                    if gran_code != "1D": fig_y1.update_traces(mode='lines+markers')
+                    fig_y1.update_layout(xaxis_title="Tanggal", yaxis_title="Ask Yield (%)", legend=legend_layout_gov, hovermode="x unified")
+                    st.plotly_chart(fig_y1, use_container_width=True)
+
+                with tab_y2:
+                    df_y_rebase = apply_rebasing(df_yield_raw, rebase_code)
+                    if not df_y_rebase.empty:
+                        fig_y2 = px.line(df_y_rebase, x=df_y_rebase.index, y=df_y_rebase.columns, title=f"Persentase Perubahan Yield ({selected_label_rebase})")
+                        fig_y2.add_hline(y=0, line_dash="dash", line_color="gray", opacity=0.5)
+                        fig_y2.update_yaxes(ticksuffix="%")
+                        fig_y2 = add_end_annotations(fig_y2, df_y_rebase)
+                        fig_y2.update_layout(xaxis_title="Tanggal", yaxis_title="Perubahan Yield (%)", legend=legend_layout_gov, hovermode="x unified")
+                        st.plotly_chart(fig_y2, use_container_width=True)
+                    else:
+                        st.warning("Data Yield tidak mencukupi untuk Rebasing.")
             else:
-                st.warning("Data Yield tidak tersedia.")
+                st.warning("Data Yield tidak tersedia sama sekali di database.")
         else:
             st.info("Pilih minimal 1 seri obligasi.")
     else:
-        st.warning("Data Obligasi Negara tidak tersedia di database untuk rentang waktu ini.")
+        st.warning("Data Obligasi Negara tidak tersedia di database.")
 
     st.divider()
-        
 # ==================== TAB 7: REKOMENDASI FUNDAMENTAL (MANUAL UPLOAD) ====================
 with tab_recommendation:
     st.header("🎯 Peringkat Fundamental (Data Manual)")
