@@ -156,8 +156,8 @@ def run_daily_sync(start_date, end_date):
     tickers_bonds = [x['isin_code'] for x in bond_master]
     for i in range(0, len(tickers_bonds), 20):
         try:
-            df_bonds = rd.get_data(universe=tickers_bonds[i:i+20], fields=['TR.ASKPRICE.date', 'TR.ASKPRICE', 'TR.ASKYIELD'], parameters=params)
-            mapping_bonds = {'Instrument': 'isin_code', 'Date': 'date', 'Ask Price': 'ask_price', 'Ask Yield': 'ask_yield', 'TR.ASKPRICE.date': 'date', 'TR.ASKPRICE': 'ask_price', 'TR.ASKYIELD': 'ask_yield'}
+            df_bonds = rd.get_data(universe=tickers_bonds[i:i+20], fields=['TR.ASKPRICE.date', 'TR.ASKPRICE', 'TR.BIDYIELD'], parameters=params)
+            mapping_bonds = {'Instrument': 'isin_code', 'Date': 'date', 'Ask Price': 'ask_price', 'Bid Yield': 'ask_yield', 'TR.ASKPRICE.date': 'date', 'TR.ASKPRICE': 'ask_price', 'TR.BIDYIELD': 'ask_yield'}
             process_and_upload(df_bonds, "gov_bonds_prices_daily", ["ask_price", "ask_yield"], mapping_bonds)
         except: pass
         
@@ -177,11 +177,10 @@ def run_daily_sync(start_date, end_date):
             process_and_upload(df_mac, "macro_daily", ["value"], mapping_mac)
         except: pass
 
-def backfill_new_instrument(table_dest, id_col, ticker, fields, value_cols, rename_mapping):
-    """Fungsi mandiri untuk menarik data 25 tahun ke belakang (2000-01-01) untuk 1 instrumen baru"""
-    start_str = "2000-01-01"
+def backfill_new_instrument(table_dest, id_col, ticker, fields, value_cols, rename_mapping, start_date_str):
+    """Fungsi mandiri untuk menarik data historis instrumen baru berdasarkan tanggal spesifik."""
     end_str = dt.datetime.today().strftime('%Y-%m-%d')
-    params = {'SDate': start_str, 'EDate': end_str, 'Frq': 'D'}
+    params = {'SDate': start_date_str, 'EDate': end_str, 'Frq': 'D'}
     
     try:
         df_raw = rd.get_data(universe=[ticker], fields=fields, parameters=params)
@@ -195,23 +194,52 @@ def backfill_new_instrument(table_dest, id_col, ticker, fields, value_cols, rena
 
     # Pembersihan Data
     df_raw = df_raw.loc[:, ~df_raw.columns.duplicated()]
+
+    # 1. Pencegahan Tumpang Tindih Tanggal
+    date_candidates = [c for c in df_raw.columns if c.lower().endswith('.date')]
+    if date_candidates and 'Date' in df_raw.columns:
+        df_raw = df_raw.drop(columns=['Date']) 
+
     df_clean = df_raw.rename(columns=rename_mapping)
     
     if 'date' not in df_clean.columns: return False
     existing_val_cols = [col for col in value_cols if col in df_clean.columns]
     if not existing_val_cols: return False
     
-    df_clean[existing_val_cols] = df_clean[existing_val_cols].replace(r'^\s*$', np.nan, regex=True)
-    df_clean = df_clean.dropna(subset=['date', existing_val_cols[0]]) 
+    val_col = existing_val_cols[0]
+
+    # 2. Konversi Numerik dan Penghapusan Data Kosong
+    df_clean[val_col] = pd.to_numeric(df_clean[val_col], errors='coerce')
+    df_clean[val_col] = df_clean[val_col].replace(0.0, np.nan)
+    df_clean = df_clean.dropna(subset=['date', val_col]) 
     if df_clean.empty: return False
+
+    df_clean = df_clean.reset_index(drop=True)
+
+    # 3. Pemotongan Harga Stagnan (Anti-Padding) - Tetap digunakan untuk berjaga-jaga
+    s = df_clean[val_col]
+    diffs = s.diff().abs()
+    active_mask = diffs > 0.0001 
+    active_mask.iloc[0] = True 
     
+    active_indices = active_mask[active_mask == True].index
+    
+    if len(active_indices) > 1:
+        first_real_move_idx = active_indices[1]
+        start_idx = max(0, first_real_move_idx - 1)
+        df_clean = df_clean.iloc[start_idx:]
+    else:
+        if len(df_clean) > 30:
+            df_clean = df_clean.tail(30) 
+
+    # 4. Format dan Persiapan Upload
     df_clean['date'] = pd.to_datetime(df_clean['date']).dt.strftime('%Y-%m-%d')
     id_mapped = 'isin_code' if id_col == 'isin_code' else 'ticker'
     df_clean = df_clean.drop_duplicates(subset=[id_mapped, 'date'], keep='last')
+    
     df_clean = df_clean.astype(object).where(pd.notnull(df_clean), None)
     
-    payload = df_clean.to_dict(orient='records')
-    
+    payload = df_clean.to_dict(orient='records')  
     # Upload ke Supabase dalam batch 1000
     for i in range(0, len(payload), 1000):
         try:
@@ -220,7 +248,8 @@ def backfill_new_instrument(table_dest, id_col, ticker, fields, value_cols, rena
             st.error(f"DB Error: {e}")
             return False
             
-    return True  
+    return True
+
 # ==================== KONFIGURASI HALAMAN ====================
 st.set_page_config(
     page_title="Investment Dashboard - Reksa Dana Indonesia",
@@ -328,30 +357,24 @@ def load_all_data(start_date, end_date, currency='IDR'):
         'gov_bonds_price': align_wide_df(df_gov_bonds_price), 'gov_bonds_yield': align_wide_df(df_gov_bonds_yield)
     }, start_date, end_date
 
-# ==================== FUNGSI UNTUK MENGHITUNG METRIK DAN SKOR ====================
-def calculate_metrics(price_data, benchmark_series, risk_free_rate, eval_window=None):
+def calculate_metrics(price_data, benchmark_series, risk_free_rate, eval_window=None, young_funds_list=None):
     price_data = price_data.dropna(axis=1, how='all')
     price_data = price_data.ffill().bfill()
     
-    # 1. Kalkulasi Return Absolut (Menggunakan seluruh data Cut-off)
     returns_full = price_data.pct_change().dropna(how='all')
     if returns_full.empty: return None
         
     inception = (price_data.iloc[-1] / price_data.iloc[0]) - 1
     
     def get_period_return(df, days):
-        if len(df) > days:
-            return (df.iloc[-1] / df.iloc[-(days + 1)]) - 1
-        else:
-            return (df.iloc[-1] / df.iloc[0]) - 1
+        if len(df) > days: return (df.iloc[-1] / df.iloc[-(days + 1)]) - 1
+        else: return (df.iloc[-1] / df.iloc[0]) - 1
             
     return_1w = get_period_return(price_data, 5)   
     return_1m = get_period_return(price_data, 22)  
     return_3m = get_period_return(price_data, 63)  
     
-    # 2. ISOLASI LENGTH DAYS UNTUK RISIKO & RASIO (Mengikuti Interval)
     if eval_window is not None and len(price_data) > eval_window:
-        # Memotong data secara paksa dari bawah (terbaru) sebanyak eval_window
         price_data_risk = price_data.tail(eval_window)
         bench_risk = benchmark_series.tail(eval_window)
     else:
@@ -361,7 +384,6 @@ def calculate_metrics(price_data, benchmark_series, risk_free_rate, eval_window=
     returns_risk = price_data_risk.pct_change().dropna(how='all')
     bench_returns_risk = bench_risk.pct_change().dropna()
     
-    # days_risk sekarang secara dinamis menjadi 22, 63, 126, atau 252 sesuai pilihan interval Anda
     days_risk = len(price_data_risk) 
     days = (price_data_risk.index[-1] - price_data_risk.index[0]).days
     annualization_factor = 252 / days * len(returns_risk)
@@ -369,10 +391,7 @@ def calculate_metrics(price_data, benchmark_series, risk_free_rate, eval_window=
     risk_period_return = (price_data_risk.iloc[-1] / price_data_risk.iloc[0]) - 1 if days_risk > 0 else 0
     annualized_return = ((1 + risk_period_return) ** annualization_factor) - 1
     
-    # Volatilitas dihitung murni dari sampel length days interval
     volatility_1sd = returns_risk.std() * np.sqrt(252)
-    
-    excess_return = annualized_return - risk_free_rate
     mean_return = returns_risk.mean() * 252
     sharpe_ratio = (mean_return - risk_free_rate) / volatility_1sd.replace(0, np.nan)
 
@@ -389,69 +408,52 @@ def calculate_metrics(price_data, benchmark_series, risk_free_rate, eval_window=
                 if col in cov_matrix.columns and 'MARKET' in cov_matrix.index:
                     beta[col] = cov_matrix.loc['MARKET', col] / var_market
 
-        combined_prices = pd.concat([price_data_risk, bench_risk.rename('MARKET')], axis=1).ffill().bfill()
-        # if 'MARKET' in combined_prices.columns and len(combined_prices) > 0:
-        #     market_return = (combined_prices['MARKET'].iloc[-1] / combined_prices['MARKET'].iloc[0]) - 1
-        #     ann_market_return = ((1 + market_return) ** annualization_factor) - 1
-        # else:
-        #     ann_market_return = 0
-            
         market_mean_return = bench_returns_risk.mean() * 252
         expected_return = risk_free_rate + beta * (market_mean_return - risk_free_rate)
-        mean_return = returns_risk.mean() * 252
         alpha = mean_return - expected_return
 
-    # Pastikan semua metrik masuk ke DataFrame utama
+    # --- KARANTINA RISIKO UNTUK PRODUK MUDA ---
+    if young_funds_list is not None:
+        for col in price_data_risk.columns:
+            if col in young_funds_list:
+                volatility_1sd[col] = np.nan
+                sharpe_ratio[col] = np.nan
+                beta[col] = np.nan
+                alpha[col] = np.nan
+
     metrics_df = pd.DataFrame({
-        'Inception_Return': inception,
-        'Interval_Return': risk_period_return, 
-        'Return_1W': return_1w,
-        'Return_1M': return_1m,
-        'Return_3M': return_3m,
-        'Volatility': volatility_1sd, 
-        'Sharpe_Ratio': sharpe_ratio,
-        'Beta': beta,
-        'Alpha': alpha
+        'Inception_Return': inception, 'Interval_Return': risk_period_return, 
+        'Return_1W': return_1w, 'Return_1M': return_1m, 'Return_3M': return_3m,
+        'Volatility': volatility_1sd, 'Sharpe_Ratio': sharpe_ratio, 'Beta': beta, 'Alpha': alpha
     })
     
-    # 3. Metrik Konsistensi Peringkat (Berdasarkan Cut-off Penuh)
+    # [Logika Consist & Climb Tetap Sama]
     consist_results = {}
     intervals = {'1d': 1, '7d': 7, '14d': 14, '21d': 21}
     top_ns = [5, 10, 20]
-
     for label, interval in intervals.items():
         today = price_data.index[-1]
         start_date = price_data.index[0]
         target_dates = []
         current_date = today
-
         while current_date >= start_date:
             target_dates.append(current_date)
             current_date -= pd.Timedelta(days=interval)
         target_dates.reverse()
-
         snapshot_indices = []
         for d in target_dates:
             idx = price_data.index.get_indexer([d], method='pad')[0]
-            if idx != -1:
-                snapshot_indices.append(price_data.index[idx])
+            if idx != -1: snapshot_indices.append(price_data.index[idx])
         snapshot_indices = sorted(list(set(snapshot_indices)))
-
         if len(snapshot_indices) < 2:
-            for n in top_ns:
-                consist_results[f'Consist_{label}_Top{n}'] = pd.Series(0, index=price_data.columns)
+            for n in top_ns: consist_results[f'Consist_{label}_Top{n}'] = pd.Series(0, index=price_data.columns)
             continue
-
         sliced_prices = price_data.loc[snapshot_indices]
         period_returns = sliced_prices.pct_change().dropna(how='all')
-
         if period_returns.empty:
-            for n in top_ns:
-                consist_results[f'Consist_{label}_Top{n}'] = pd.Series(0, index=price_data.columns)
+            for n in top_ns: consist_results[f'Consist_{label}_Top{n}'] = pd.Series(0, index=price_data.columns)
             continue
-
         period_ranks = period_returns.rank(axis=1, ascending=False, method='min')
-
         for n in top_ns:
             scores = {}
             for col in period_ranks.columns:
@@ -463,89 +465,65 @@ def calculate_metrics(price_data, benchmark_series, risk_free_rate, eval_window=
                     if val:
                         streak += 1
                         if streak > max_streak: max_streak = streak
-                    else:
-                        streak = 0
+                    else: streak = 0
                 scores[col] = count + max_streak
             consist_results[f'Consist_{label}_Top{n}'] = pd.Series(scores)
 
     df_consist = pd.DataFrame(consist_results)
     metrics_df = pd.concat([metrics_df, df_consist], axis=1)
     
-    # 4. Metrik Climber (Berdasarkan Cut-off Penuh)
     daily_ranks = returns_full.rank(axis=1, ascending=False, method='min')
-    
     if not daily_ranks.empty:
         rank_today = daily_ranks.iloc[-1]
-        
         def get_safe_past_rank(offset_days):
-            if len(daily_ranks) > offset_days:
-                return daily_ranks.iloc[-(offset_days + 1)]
+            if len(daily_ranks) > offset_days: return daily_ranks.iloc[-(offset_days + 1)]
             return daily_ranks.iloc[0]
-            
         metrics_df['Climb_1d'] = get_safe_past_rank(1) - rank_today
         metrics_df['Climb_7d'] = get_safe_past_rank(7) - rank_today
         metrics_df['Climb_14d'] = get_safe_past_rank(14) - rank_today
         metrics_df['Climb_22d'] = get_safe_past_rank(22) - rank_today
     else:
-        for c in ['Climb_1d', 'Climb_7d', 'Climb_14d', 'Climb_22d']:
-            metrics_df[c] = 0
+        for c in ['Climb_1d', 'Climb_7d', 'Climb_14d', 'Climb_22d']: metrics_df[c] = 0
             
-    # 5. Valuasi / Z-Score & Fraksi Skor
     mean_price = price_data_risk.mean()
     std_price = price_data_risk.std()
-    
     z_score = pd.Series(0.0, index=price_data_risk.columns)
     status_valuasi = pd.Series("", index=price_data_risk.columns) 
-    skor_valuasi = pd.Series(0.0, index=price_data_risk.columns) # Variabel penampung skor baru
-    
-    # Deteksi total produk sebagai Full Score
+    skor_valuasi = pd.Series(0.0, index=price_data_risk.columns) 
     num_products = len(price_data_risk.columns)
     
     for col in price_data_risk.columns:
+        # KARANTINA VALUASI UNTUK PRODUK MUDA
+        if young_funds_list is not None and col in young_funds_list:
+            z_score[col] = np.nan
+            status_valuasi[col] = "⚠️ Data Terbatas"
+            skor_valuasi[col] = np.nan 
+            continue
+            
         if std_price[col] != 0 and not pd.isna(std_price[col]):
             z_val = (price_data_risk[col].iloc[-1] - mean_price[col]) / std_price[col]
             z_score[col] = z_val
-            
-            # --- A. Penentuan Label Status ---
-            if z_val >= 3.0:
-                status_valuasi[col] = "🔴 Sangat Mahal"
-            elif z_val <= -3.0:
-                status_valuasi[col] = "🟢 Sangat Murah"
-            elif z_val < 3.0 and z_val >= 2.0:
-                status_valuasi[col] = "🔴 Mahal"
-            elif z_val > -3.0 and z_val <= -2.0:
-                status_valuasi[col] = "🟢 Murah"
-            elif z_val < 2.0 and z_val >= 1.0:
-                status_valuasi[col] = "🟠 Sedikit Mahal"
-            elif z_val > -2.0 and z_val <= -1.0:
-                status_valuasi[col] = "🟢 Sedikit Murah"
-            elif z_val < 1.0 and z_val >= -1.0:
-                status_valuasi[col] = "⚪ Fair Price"
-            else:
-                status_valuasi[col] = "" 
+            if z_val >= 3.0: status_valuasi[col] = "🔴 Sangat Mahal"
+            elif z_val <= -3.0: status_valuasi[col] = "🟢 Sangat Murah"
+            elif z_val < 3.0 and z_val >= 2.0: status_valuasi[col] = "🔴 Mahal"
+            elif z_val > -3.0 and z_val <= -2.0: status_valuasi[col] = "🟢 Murah"
+            elif z_val < 2.0 and z_val >= 1.0: status_valuasi[col] = "🟠 Sedikit Mahal"
+            elif z_val > -2.0 and z_val <= -1.0: status_valuasi[col] = "🟢 Sedikit Murah"
+            elif z_val < 1.0 and z_val >= -1.0: status_valuasi[col] = "⚪ Fair Price"
+            else: status_valuasi[col] = "" 
                 
-            # --- B. Kalkulasi 8-Bands Skor Berdasarkan Populasi ---
-            if z_val > 3.0:
-                skor_valuasi[col] = (1/8) * num_products
-            elif 2.0 < z_val <= 3.0:
-                skor_valuasi[col] = (2/8) * num_products
-            elif 1.0 < z_val <= 2.0:
-                skor_valuasi[col] = (3/8) * num_products
-            elif 0.0 < z_val <= 1.0:
-                skor_valuasi[col] = (4/8) * num_products
-            elif -1.0 < z_val <= 0.0:
-                skor_valuasi[col] = (5/8) * num_products
-            elif -2.0 < z_val <= -1.0:
-                skor_valuasi[col] = (6/8) * num_products
-            elif -3.0 < z_val <= -2.0:
-                skor_valuasi[col] = (7/8) * num_products
-            else: # z_val <= -3.0
-                skor_valuasi[col] = (8/8) * num_products
+            if z_val > 3.0: skor_valuasi[col] = (1/8) * num_products
+            elif 2.0 < z_val <= 3.0: skor_valuasi[col] = (2/8) * num_products
+            elif 1.0 < z_val <= 2.0: skor_valuasi[col] = (3/8) * num_products
+            elif 0.0 < z_val <= 1.0: skor_valuasi[col] = (4/8) * num_products
+            elif -1.0 < z_val <= 0.0: skor_valuasi[col] = (5/8) * num_products
+            elif -2.0 < z_val <= -1.0: skor_valuasi[col] = (6/8) * num_products
+            elif -3.0 < z_val <= -2.0: skor_valuasi[col] = (7/8) * num_products
+            else: skor_valuasi[col] = (8/8) * num_products
 
     metrics_df['Z_Score'] = z_score
     metrics_df['Status_Valuasi'] = status_valuasi
     metrics_df['Skor_Valuasi'] = skor_valuasi
-    
     return metrics_df
 
 def calculate_rolling_timeseries(price_data, benchmark_series, risk_free_rate, window=63):
@@ -581,8 +559,6 @@ def calculate_rolling_timeseries(price_data, benchmark_series, risk_free_rate, w
     }
 
 def calculate_ranking_scores(metrics_df, weights=None):
-    """Menghitung skor komposit dari 25 metrik (termasuk 4 metrik momentum perpindahan peringkat)."""
-    # Bobot disebar rata ke 25 metrik (1/25 atau ~4.16% per metrik)
     w = 1.0 / 25.0
     if weights is None:
         weights = {
@@ -607,51 +583,47 @@ def calculate_ranking_scores(metrics_df, weights=None):
             if len(values) > 0:
                 min_val = values.min()
                 max_val = values.max()
-                if max_val > min_val:
-                    scaled = (df_scaled[col] - min_val) / (max_val - min_val)
-                else:
-                    scaled = pd.Series([0.5] * len(df_scaled[col]), index=df_scaled.index)
-                                
-                if weights[col] < 0:
-                    scaled = 1 - scaled
+                if max_val > min_val: scaled = (df_scaled[col] - min_val) / (max_val - min_val)
+                else: scaled = pd.Series([0.5] * len(df_scaled[col]), index=df_scaled.index)
+                if weights[col] < 0: scaled = 1 - scaled
                 df_scaled[col + '_scaled'] = scaled * abs(weights[col])
 
     score_cols = [col + '_scaled' for col in valid_metrics if (col + '_scaled') in df_scaled.columns]
     
     if score_cols:
+        # DISKUALIFIKASI: Deteksi instrumen yang metrik ujiannya NaN
+        missing_metrics_mask = df_scaled[valid_metrics].isna().any(axis=1)
+        
         df_scaled['Total_Score'] = df_scaled[score_cols].fillna(0).sum(axis=1)
+        df_scaled.loc[missing_metrics_mask, 'Total_Score'] = np.nan # Anulir skor totalnya
+        
+        # Hapus instrumen yang tidak lolos syarat umur/metrik dari papan peringkat
+        df_scaled = df_scaled.dropna(subset=['Total_Score'])
     else:
         df_scaled['Total_Score'] = 0
 
     return df_scaled[['Total_Score'] + score_cols].sort_values('Total_Score', ascending=False)
 
-def get_7d_ranking_history(price_data, benchmark_series, risk_free_rate, eval_window=None, custom_weights=None):
-    """Menghitung history ranking 7 hari terakhir"""
+def get_7d_ranking_history(price_data, benchmark_series, risk_free_rate, eval_window=None, custom_weights=None, young_funds_list=None):
     history_ranks = {}
     if len(price_data) < 7: return pd.DataFrame()
-        
     dates = price_data.index[-7:]
-    
     for date in dates:
         sliced_prices = price_data.loc[:date]
         sliced_bench = benchmark_series.loc[:date]
-        
         if len(sliced_prices) < 10: continue
-            
-        metrics = calculate_metrics(sliced_prices, sliced_bench, risk_free_rate, eval_window=eval_window)
+        # INJEKSI PARAMETER PRODUK MUDA    
+        metrics = calculate_metrics(sliced_prices, sliced_bench, risk_free_rate, eval_window=eval_window, young_funds_list=young_funds_list)
         if metrics is not None and not metrics.empty:
             ranks = calculate_ranking_scores(metrics, weights=custom_weights)
             if not ranks.empty:
                 rank_series = pd.Series(range(1, len(ranks) + 1), index=ranks.index)
                 date_str = date.strftime('%d/%m')
                 history_ranks[date_str] = rank_series
-                
     return pd.DataFrame(history_ranks)
 
-def get_detailed_ranking_history(price_data_full, benchmark_series_full, risk_free_rate, metric_window, num_columns=10, custom_weights=None, trading_days_interval=1):
-    """Menghitung history ranking komposit dengan lompatan akurat berbasis Index Array (Trading Days)"""
+def get_detailed_ranking_history(price_data_full, benchmark_series_full, risk_free_rate, metric_window, num_columns=10, custom_weights=None, trading_days_interval=1, young_funds_list=None):
     if len(price_data_full) < 1: return pd.DataFrame()
-    
     total_points_needed = (num_columns - 1) * trading_days_interval + 1
     if len(price_data_full) < total_points_needed:
         num_columns = (len(price_data_full) - 1) // trading_days_interval + 1
@@ -664,30 +636,24 @@ def get_detailed_ranking_history(price_data_full, benchmark_series_full, risk_fr
     for date in eval_dates:
         idx_today = price_data_full.index.get_loc(date)
         idx_start = max(0, idx_today - metric_window)
-        
         sliced_prices = price_data_full.iloc[idx_start:idx_today+1]
         sliced_bench = benchmark_series_full.iloc[idx_start:idx_today+1]
-        
         if len(sliced_prices) < 10: continue
-            
-        metrics = calculate_metrics(sliced_prices, sliced_bench, risk_free_rate)
+        
+        # INJEKSI PARAMETER PRODUK MUDA    
+        metrics = calculate_metrics(sliced_prices, sliced_bench, risk_free_rate, young_funds_list=young_funds_list)
         if metrics is not None and not metrics.empty:
-            
-            # --- ELIMINASI INSTRUMEN DELAY (KHUSUS INTERVAL HARIAN) ---
             if idx_today > 0 and trading_days_interval == 1:
                 daily_pct = (price_data_full.iloc[idx_today] / price_data_full.iloc[idx_today-1]) - 1
                 stagnant_instruments = daily_pct[daily_pct == 0.0].index
-                # Hapus dari penilaian agar tidak mendapat peringkat palsu
                 metrics = metrics.drop(index=stagnant_instruments, errors='ignore')
 
             if metrics.empty: continue
-
             ranks = calculate_ranking_scores(metrics, weights=custom_weights)
             if not ranks.empty:
                 rank_series = pd.Series(range(1, len(ranks) + 1), index=ranks.index)
                 date_str = date.strftime('%d/%m/%y') 
                 history_ranks[date_str] = rank_series
-                
                 top5_today = set(rank_series[rank_series <= 5].index)
                 for product in price_data_full.columns:
                     if product not in top5_streak: top5_streak[product] = 0
@@ -695,9 +661,7 @@ def get_detailed_ranking_history(price_data_full, benchmark_series_full, risk_fr
                     else: top5_streak[product] = 0
     
     history_df = pd.DataFrame(history_ranks)
-    if not history_df.empty:
-        history_df['Streak_Top5'] = pd.Series(top5_streak)
-    
+    if not history_df.empty: history_df['Streak_Top5'] = pd.Series(top5_streak)
     return history_df
 
 def get_monthly_rankings(price_data, benchmark_series, risk_free_rate):
@@ -969,28 +933,43 @@ with st.sidebar:
             mf_name = st.text_input("Nama Reksa Dana")
             mf_type = st.selectbox("Fund Type", ["Equity", "Fixed Income"])
             mf_curr = st.selectbox("Mata Uang", ["IDR", "USD"], key="mf_c")
+            mf_release_date = st.date_input("Tanggal Rilis Produk", value=dt.date(2024, 1, 1), help="Sistem akan menarik data mulai dari tanggal ini.")
             
-            if st.form_submit_button("Tambah & Backfill 25 Thn"):
+            if st.form_submit_button("Tambah & Tarik Data"):
                 if mf_ticker and mf_name:
-                    with st.spinner("Membuka koneksi Refinitiv & Menarik Historis (± 1 Menit)..."):
-                        # Buka sesi Refinitiv secara otomatis jika belum terkoneksi
-                        if not st.session_state.connected:
-                            st.session_state.connected = init_refinitiv_session()
-                            
-                        if st.session_state.connected:
-                            if validate_ticker(mf_ticker, "MF"):
-                                # Insert ke Master DB
-                                supabase.table("mf_instruments").upsert([{"ticker": mf_ticker, "name": mf_name, "fund_type": mf_type, "currency": mf_curr}]).execute()
-                                # Backfill Historis
-                                success = backfill_new_instrument("mf_nav_daily", "ticker", mf_ticker, ['TR.NETASSETVAL.date', 'TR.NETASSETVAL'], ["nav"], {'Instrument': 'ticker', 'Date': 'date', 'TR.NETASSETVAL.date': 'date', 'TR.NETASSETVAL': 'nav', 'Net Asset Value': 'nav'})
-                                if success:
-                                    load_master_instruments.clear()
-                                    st.success(f"✅ {mf_name} berhasil ditambahkan dan data historis diunduh!")
-                                    st.rerun()
-                            else:
-                                st.error("❌ Ticker tidak ditemukan di Refinitiv!")
-                        else:
-                            st.error("❌ Gagal terhubung ke API Refinitiv.")
+                    with st.spinner(f"Menarik Historis dari {mf_release_date.strftime('%Y')}..."):
+                        max_retries = 3
+                        for attempt in range(max_retries):
+                            try:
+                                if not st.session_state.connected:
+                                    st.session_state.connected = init_refinitiv_session()
+                                    
+                                if st.session_state.connected:
+                                    if validate_ticker(mf_ticker, "MF"):
+                                        supabase.table("mf_instruments").upsert([{"ticker": mf_ticker, "name": mf_name, "fund_type": mf_type, "currency": mf_curr}]).execute()
+                                        
+                                        # Inject Start Date dinamis
+                                        success = backfill_new_instrument("mf_nav_daily", "ticker", mf_ticker, ['TR.NETASSETVAL.date', 'TR.NETASSETVAL'], ["nav"], {'Instrument': 'ticker', 'Date': 'date', 'TR.NETASSETVAL.date': 'date', 'TR.NETASSETVAL': 'nav', 'Net Asset Value': 'nav'}, start_date_str=mf_release_date.strftime('%Y-%m-%d'))
+                                        
+                                        load_master_instruments.clear()
+                                        load_all_data.clear()
+                                        
+                                        if success: st.success(f"✅ {mf_name} ditambahkan!")
+                                        else: st.warning(f"⚠️ {mf_name} tersimpan, historis kosong.")
+                                        time.sleep(1)
+                                        st.rerun()
+                                        break
+                                    else:
+                                        if attempt < max_retries - 1:
+                                            st.warning(f"⚠️ Percobaan {attempt + 1} gagal. Mengulang...")
+                                            time.sleep(5)
+                                        else: st.error("❌ Ticker tidak ditemukan!")
+                                else:
+                                    if attempt < max_retries - 1: time.sleep(5)
+                                    else: st.error("❌ Gagal terhubung ke API Refinitiv.")
+                            except Exception as e:
+                                if attempt < max_retries - 1: time.sleep(5)
+                                else: st.error(f"❌ Gagal total: {e}")
                 else: st.warning("Isi Ticker dan Nama!")
 
     # 2. FORM OBLIGASI NEGARA
@@ -999,22 +978,28 @@ with st.sidebar:
             bond_isin = st.text_input("ISIN Code / Ticker", placeholder="Contoh: IDFR0100=")
             bond_name = st.text_input("Nama Obligasi", placeholder="Contoh: FR100")
             bond_curr = st.selectbox("Mata Uang", ["IDR", "USD"], key="bd_c")
+            bond_release_date = st.date_input("Tanggal Rilis Obligasi", value=dt.date(2024, 1, 1))
             
-            if st.form_submit_button("Tambah & Backfill 25 Thn"):
+            if st.form_submit_button("Tambah & Tarik Data"):
                 if bond_isin and bond_name:
-                    with st.spinner("Membuka koneksi Refinitiv & Menarik Historis..."):
+                    with st.spinner("Menarik Historis Obligasi..."):
                         if not st.session_state.connected:
                             st.session_state.connected = init_refinitiv_session()
                             
                         if st.session_state.connected:
                             supabase.table("gov_bonds_instruments").upsert([{"isin_code": bond_isin, "name": bond_name, "currency": bond_curr}]).execute()
-                            success = backfill_new_instrument("gov_bonds_prices_daily", "isin_code", bond_isin, ['TR.ASKPRICE.date', 'TR.ASKPRICE', 'TR.ASKYIELD'], ["ask_price", "ask_yield"], {'Instrument': 'isin_code', 'Date': 'date', 'Ask Price': 'ask_price', 'Ask Yield': 'ask_yield', 'TR.ASKPRICE.date': 'date', 'TR.ASKPRICE': 'ask_price', 'TR.ASKYIELD': 'ask_yield'})
-                            if success:
-                                load_master_instruments.clear()
-                                st.success("✅ Obligasi ditambahkan!")
-                                st.rerun()
-                        else:
-                            st.error("❌ Gagal terhubung ke API Refinitiv.")
+                            
+                            # Inject Start Date dinamis
+                            success = backfill_new_instrument("gov_bonds_prices_daily", "isin_code", bond_isin, ['TR.ASKPRICE.date', 'TR.ASKPRICE', 'TR.BIDYIELD'], ["ask_price", "ask_yield"], {'Instrument': 'isin_code', 'Date': 'date', 'Ask Price': 'ask_price', 'Bid Yield': 'ask_yield', 'TR.ASKPRICE.date': 'date', 'TR.ASKPRICE': 'ask_price', 'TR.BIDYIELD': 'ask_yield'}, start_date_str=bond_release_date.strftime('%Y-%m-%d'))
+                            
+                            load_master_instruments.clear()
+                            load_all_data.clear()
+                            
+                            if success: st.success("✅ Obligasi ditambahkan!")
+                            else: st.warning("⚠️ Obligasi ditambahkan, historis kosong.")
+                            time.sleep(1)
+                            st.rerun()
+                        else: st.error("❌ Gagal terhubung ke API Refinitiv.")
                 else: st.warning("Isi ISIN dan Nama!")
 
     # 3. FORM MAKRO
@@ -1024,50 +1009,64 @@ with st.sidebar:
             mac_name = st.text_input("Nama Makro", placeholder="Contoh: IHSG")
             mac_cat = st.selectbox("Kategori", ["Index", "Interest Rate", "Currency", "Commodity"])
             mac_metric = st.selectbox("Metric Type API", ["Price Close", "Close Price", "America Close Bid Price"])
-            # Opsi dropdown mata uang telah dihapus
             
             if st.form_submit_button("Tambah & Backfill 25 Thn"):
                 if mac_ticker and mac_name:
-                    with st.spinner("Membuka koneksi Refinitiv & Menarik Historis Makro..."):
+                    with st.spinner("Menarik Historis Makro (25 Tahun)..."):
                         if not st.session_state.connected:
                             st.session_state.connected = init_refinitiv_session()
                             
                         if st.session_state.connected:
-                            # Hapus parameter "currency": "ALL" agar tidak error dengan skema DB
                             supabase.table("macro_instruments").upsert([
                                 {"ticker": mac_ticker, "name": mac_name, "category": mac_cat, "metric_type": mac_metric}
                             ]).execute()
                             
-                            # Definisikan API mapping dinamis berdasarkan pilihan dropdown
                             field_code = "TR.PriceClose" if mac_metric == "Price Close" else ("TR.AmericaCloseBidPrice" if mac_metric == "America Close Bid Price" else "TR.ClosePrice")
                             
-                            success = backfill_new_instrument("macro_daily", "ticker", mac_ticker, [f"{field_code}.date", field_code], ["value"], {'Instrument': 'ticker', 'Date': 'date', f'{field_code}.date': 'date', field_code: 'value', 'Price Close': 'value', 'Close Price': 'value', 'America Close Bid Price': 'value', 'cLOSE Price': 'value'})
-                            if success:
-                                load_master_instruments.clear()
-                                st.success("✅ Makro ditambahkan!")
-                                st.rerun()
-                        else:
-                            st.error("❌ Gagal terhubung ke API Refinitiv.")
+                            # Makro menggunakan hardcode 2000-01-01
+                            success = backfill_new_instrument("macro_daily", "ticker", mac_ticker, [f"{field_code}.date", field_code], ["value"], {'Instrument': 'ticker', 'Date': 'date', f'{field_code}.date': 'date', field_code: 'value', 'Price Close': 'value', 'Close Price': 'value', 'America Close Bid Price': 'value', 'cLOSE Price': 'value'}, start_date_str="2000-01-01")
+                            
+                            load_master_instruments.clear()
+                            load_all_data.clear()
+                            
+                            if success: st.success("✅ Makro ditambahkan!")
+                            else: st.warning("⚠️ Makro ditambahkan, historis kosong.")
+                            time.sleep(1)
+                            st.rerun()
+                        else: st.error("❌ Gagal terhubung ke API Refinitiv.")
                 else: st.warning("Lengkapi data makro!")
 
     # 4. FORM HAPUS (DELETE)
     with tab_del:
         mf_master, bond_master, macro_master = load_master_instruments()
-        all_del_opts = {f"MF: {x['name']}": ("mf_instruments", "ticker", x['ticker']) for x in mf_master}
-        all_del_opts.update({f"Bond: {x['name']}": ("gov_bonds_instruments", "isin_code", x['isin_code']) for x in bond_master})
-        all_del_opts.update({f"Macro: {x['name']}": ("macro_instruments", "ticker", x['ticker']) for x in macro_master})
+        
+        # PERBAIKAN 2: Mendaftarkan target tabel harian ke dalam tuple untuk Cascade Delete
+        all_del_opts = {f"MF: {x['name']}": ("mf_instruments", "ticker", x['ticker'], "mf_nav_daily") for x in mf_master}
+        all_del_opts.update({f"Bond: {x['name']}": ("gov_bonds_instruments", "isin_code", x['isin_code'], "gov_bonds_prices_daily") for x in bond_master})
+        all_del_opts.update({f"Macro: {x['name']}": ("macro_instruments", "ticker", x['ticker'], "macro_daily") for x in macro_master})
         
         if all_del_opts:
             sel_del = st.selectbox("Pilih Instrumen untuk Dihapus:", list(all_del_opts.keys()))
-            if st.button("🗑️ Hapus Instrumen", type="secondary"):
-                t_name, col_name, val_id = all_del_opts[sel_del]
-                supabase.table(t_name).delete().eq(col_name, val_id).execute()
-                load_master_instruments.clear()
-                st.success(f"Berhasil dihapus dari master data.")
-                st.rerun()
+            if st.button("🗑️ Hapus Instrumen & Riwayat", type="secondary"):
+                t_master, col_name, val_id, t_daily = all_del_opts[sel_del]
+                
+                with st.spinner(f"Menghapus {sel_del} secara permanen..."):
+                    # 1. Hapus Ribuan Data Historis di Tabel Harian
+                    supabase.table(t_daily).delete().eq(col_name, val_id).execute()
+                    
+                    # 2. Hapus Identitas di Tabel Master
+                    supabase.table(t_master).delete().eq(col_name, val_id).execute()
+                    
+                    # 3. Bakar Cache
+                    load_master_instruments.clear()
+                    load_all_data.clear()
+                    
+                    st.success(f"Berhasil dihapus dari master data beserta seluruh riwayat hariannya.")
+                    time.sleep(1.5)
+                    st.rerun()
         else:
             st.info("Database instrumen kosong.")
-    st.divider()
+    
     
     # ==========================================
     # KONTROL ANALISIS (TAMPIL JIKA DATA LOADED)
@@ -1098,7 +1097,7 @@ with st.sidebar:
 
         st.subheader("⏱️ Parameter Kalkulasi")
         # UBAH: Tambahkan opsi 3 Tahun dan 5 Tahun
-        date_option = st.selectbox("Interval Rolling:", ["1 Bulan", "3 Bulan", "6 Bulan", "1 Tahun", "3 Tahun", "5 Tahun"], index=3, key="interval_analisis")
+        date_option = st.selectbox("Interval Rolling:", ["1 Bulan", "3 Bulan", "6 Bulan", "1 Tahun"], index=3, key="interval_analisis")
         
         scoring_mode = st.selectbox(
             "Fokus Skoring:",
@@ -1156,17 +1155,38 @@ if latest_dates:
 
 # --- DETEKSI REKSA DANA MUDA (< 1 TAHUN / < 252 Hari Bursa) ---
 # --- DETEKSI REKSA DANA MUDA (< 1 TAHUN KALENDER DARI DATABASE) ---
+# --- DETEKSI REKSA DANA MUDA (< 1 TAHUN KALENDER DARI DATABASE) ---
 def get_young_funds(df):
     young = []
     today = pd.Timestamp(dt.datetime.today().date())
     
     for col in df.columns:
-        first_date = df[col].first_valid_index()
-        if first_date is not None:
-            # Hitung selisih hari kalender dari data terawal hingga hari ini
-            if (today - first_date).days <= 365:
-                young.append(col)
-                
+        # 1. Hapus nilai 0.0 (API sering mengisi masa lalu dengan 0)
+        s = df[col].replace(0.0, np.nan).dropna()
+        if s.empty: continue
+        
+        # 2. Deteksi 'Padding' Harga (Harga flat masa lalu dari API)
+        # Cari kapan harga mulai aktif bergerak / berfluktuasi
+        pct = s.pct_change()
+        active_moves = pct[pct != 0.0].dropna()
+        
+        if not active_moves.empty:
+            # Rilis asli adalah 1 hari sebelum harga pertama kali bergerak
+            first_move_date = active_moves.index[0]
+            first_move_idx = s.index.get_loc(first_move_date)
+            
+            if first_move_idx > 0:
+                real_inception_date = s.index[first_move_idx - 1]
+            else:
+                real_inception_date = s.index[0]
+        else:
+            # Jika produk tidak pernah bergerak sama sekali
+            real_inception_date = s.index[0]
+            
+        # 3. Hitung umur kalender murni
+        if (today - real_inception_date).days <= 365:
+            young.append(col)
+            
     return young
 
 young_equities = get_young_funds(df_equity_full)
@@ -1246,15 +1266,11 @@ elif date_option == "6 Bulan":
     cutoff_days = 126
 elif date_option == "1 Tahun":
     cutoff_days = 252
-# TAMBAHAN: Logika 3 dan 5 Tahun
-elif date_option == "3 Tahun":
-    cutoff_days = 756  # 252 * 3
-elif date_option == "5 Tahun":
-    cutoff_days = 1260 # 252 * 5
 else:
     cutoff_days = 252
 
-metrics_all = calculate_metrics(df_all_instruments, benchmark_series_sliced, risk_free_rate, eval_window=cutoff_days)
+# MENGIRIM VARIABEL young_all ke fungsi kalkulasi
+metrics_all = calculate_metrics(df_all_instruments, benchmark_series_sliced, risk_free_rate, eval_window=cutoff_days, young_funds_list=young_all)
 
 if metrics_all is None or metrics_all.empty:
     st.error(f"Gagal menghitung metrik untuk periode {date_option}. Data mungkin tidak mencukupi.")
@@ -1262,11 +1278,11 @@ if metrics_all is None or metrics_all.empty:
 
 metrics_equity = None
 if not df_equity.empty:
-    metrics_equity = calculate_metrics(df_equity, benchmark_series_sliced, risk_free_rate, eval_window=cutoff_days)
+    metrics_equity = calculate_metrics(df_equity, benchmark_series_sliced, risk_free_rate, eval_window=cutoff_days, young_funds_list=young_all)
 
 metrics_bond = None
 if not df_bond.empty:
-    metrics_bond = calculate_metrics(df_bond, benchmark_series_sliced, risk_free_rate, eval_window=cutoff_days)
+    metrics_bond = calculate_metrics(df_bond, benchmark_series_sliced, risk_free_rate, eval_window=cutoff_days, young_funds_list=young_all)
 
 # --- LOGIKA FILTER PEMBOBOTAN DINAMIS ---
 weights_dict = None  # Default (Balanced = dibagi rata 1/25)
@@ -1292,14 +1308,14 @@ ranked_products_bond = calculate_ranking_scores(metrics_bond, weights=weights_di
 leaderboard_daily = calculate_daily_leaderboard(df_all_instruments, days=7)
 
 # ==================== TABS ====================
-tab_overview, tab_leaderboard_split,  tab_performance, tab_correlation, tab_compare, tab_recommendation, tab_gov_bonds = st.tabs([
+tab_overview, tab_leaderboard_split,  tab_performance, tab_correlation, tab_compare  = st.tabs([
     "📋 Ringkasan", 
     "🏆 Leaderboard", 
     "📊 Performa & Ranking", 
     "📈 Korelasi",  
     "📉 Perbandingan Historis",
-    "🎯 Rekomendasi Refinitiv",
-    "🏛️ Obligasi Negara"
+    # tab_rekomendasi refinitinv
+    #"🏛️ Obligasi Negara" tab_gov_bonds
 ])
 
 # --- Tab 1: Ringkasan ---
@@ -1331,8 +1347,7 @@ with tab_overview:
 
     if not ranked_to_show.empty:
         with st.spinner(f"Mengkalkulasi jejak peringkat 7 hari terakhir untuk {top10_category}..."):
-            # Menggunakan df_to_show agar peringkat murni diadu di golongannya sendiri
-            history_ranks = get_7d_ranking_history(df_to_show, benchmark_series_sliced, risk_free_rate, eval_window=cutoff_days, custom_weights=weights_dict)
+            history_ranks = get_7d_ranking_history(df_to_show, benchmark_series_sliced, risk_free_rate, eval_window=cutoff_days, custom_weights=weights_dict, young_funds_list=young_all)
         
         top_10 = ranked_to_show.head(10).reset_index()
         if 'index' in top_10.columns:
@@ -1352,12 +1367,34 @@ with tab_overview:
 
     # --- TAMBAHAN: TABEL KHUSUS REKSA DANA MUDA ---
     young_list_to_show = young_equities if top10_category == "Equity" else young_bonds
-    if young_list_to_show:
+    metrics_to_show = metrics_equity if top10_category == "Equity" else metrics_bond
+
+    if young_list_to_show and metrics_to_show is not None:
         st.divider()
         st.warning(f"⚠️ Terdapat **{len(young_list_to_show)} {top10_category}** yang baru diluncurkan (Umur < 1 Tahun).")
-        st.caption("Data historis produk di bawah ini masih terbatas sehingga komputasi metrik jangka panjang (seperti Return 1 Tahun atau Volatilitas Tahunan) mungkin kurang representatif.")
-        df_young_display = pd.DataFrame({f"Daftar Instrumen {top10_category} Muda": young_list_to_show})
-        st.dataframe(df_young_display, hide_index=True, use_container_width=True)
+        st.caption(f"Instrumen ini dianulir dari evaluasi Skor Komposit Risiko, namun diperingkat secara independen di bawah ini murni berdasarkan kinerja profit absolut pada interval analisis **{date_option}**.")
+        
+        # Ekstrak metrik khusus untuk produk muda
+        df_young = metrics_to_show.loc[metrics_to_show.index.isin(young_list_to_show)].copy()
+        
+        if not df_young.empty:
+            # Ranking performa (Interval Return) khusus di dalam kelompok produk muda
+            df_young['Peringkat_Performa'] = df_young['Interval_Return'].rank(ascending=False, method='min')
+            df_young = df_young.sort_values('Peringkat_Performa').reset_index()
+            df_young = df_young.rename(columns={'index': 'Nama Instrumen'})
+            
+            # Format teks ke persentase
+            df_young[f'Return ({date_option})'] = (df_young['Interval_Return'] * 100).round(2).astype(str) + '%'
+            df_young['Return Sejak Rilis (Inception)'] = (df_young['Inception_Return'] * 100).round(2).astype(str) + '%'
+            
+            # Buang desimal pada kolom peringkat
+            df_young['Peringkat_Performa'] = df_young['Peringkat_Performa'].fillna(0).astype(int)
+            
+            st.dataframe(
+                df_young[['Peringkat_Performa', 'Nama Instrumen', f'Return ({date_option})', 'Return Sejak Rilis (Inception)']], 
+                hide_index=True, 
+                use_container_width=True
+            )
 
 # ==================== TAB 2: LEADERBOARD ====================
 with tab_leaderboard_split:
@@ -1737,7 +1774,7 @@ with tab_performance:
         else:
             full_performance_display['Total_Score'] = 0
             
-        full_performance_display = full_performance_display.sort_values('Total_Score', ascending=False)
+        full_performance_display = full_performance_display.sort_values('Total_Score', ascending=False, na_position='last')
         full_performance_display.index.name = 'Nama Produk'
         
         # 1. Klasifikasi Kelompok Metrik
@@ -1803,7 +1840,7 @@ with tab_performance:
                 return ['background-color: rgba(255, 215, 0, 0.2)'] * len(row)
             return [''] * len(row)
 
-        styled_performance_table = full_performance_display.style.apply(highlight_perf_young, axis=1).format(final_format)
+        styled_performance_table = full_performance_display.style.apply(highlight_perf_young, axis=1).format(final_format, na_rep="-")
         
         st.caption("*(Catatan: Baris yang di-highlight **Kuning** adalah instrumen berumur kurang dari 1 tahun)*")
         st.dataframe(styled_performance_table, use_container_width=True)
@@ -1871,7 +1908,8 @@ with tab_performance:
                 history_score_df = get_detailed_ranking_history(
                     df_perf_full, benchmark_series_full, risk_free_rate, 
                     metric_window=cutoff_days, num_columns=num_columns, 
-                    custom_weights=weights_dict, trading_days_interval=trading_interval
+                    custom_weights=weights_dict, trading_days_interval=trading_interval,
+                    young_funds_list=young_all
                 )
                 if not history_score_df.empty and len(history_score_df.columns) > 1:
                     rank_score_data = history_score_df.drop(columns=['Streak_Top5'], errors='ignore')
@@ -2149,285 +2187,285 @@ with tab_compare:
         st.info("Silakan pilih instrumen dari dropdown di atas untuk memulai analisis.")
        
 # ==================== TAB 6: GRAFIK OBLIGASI NEGARA ====================
-with tab_gov_bonds:
-    st.header("🏛️ Grafik Obligasi Negara (SBN/SUN/Sukuk)")
+# with tab_gov_bonds:
+#     st.header("🏛️ Grafik Obligasi Negara (SBN/SUN/Sukuk)")
     
-    # Gunakan data utuh (_full) agar rentang waktu bisa ditarik independen dari sidebar
-    if not df_gov_bonds_price_full.empty:
-        available_gov_bonds = df_gov_bonds_price_full.columns.tolist()
+#     # Gunakan data utuh (_full) agar rentang waktu bisa ditarik independen dari sidebar
+#     if not df_gov_bonds_price_full.empty:
+#         available_gov_bonds = df_gov_bonds_price_full.columns.tolist()
         
-        selected_gov_bonds = st.multiselect(
-            "Pilih Seri Obligasi untuk Ditampilkan:",
-            options=available_gov_bonds,
-            default=available_gov_bonds[:min(3, len(available_gov_bonds))] if available_gov_bonds else [],
-            key="gov_bonds_multiselect"
-        )
+#         selected_gov_bonds = st.multiselect(
+#             "Pilih Seri Obligasi untuk Ditampilkan:",
+#             options=available_gov_bonds,
+#             default=available_gov_bonds[:min(3, len(available_gov_bonds))] if available_gov_bonds else [],
+#             key="gov_bonds_multiselect"
+#         )
         
-        if selected_gov_bonds:
-            st.divider()
+#         if selected_gov_bonds:
+#             st.divider()
             
-            # --- PANEL KONTROL WAKTU ---
-            st.subheader("⏱️ Kontrol Rentang & Jarak Waktu")
-            col_t1, col_t2 = st.columns(2)
-            with col_t1:
-                interval_mapping = {
-                    "Harian (1D)": "1D", "5 Hari (5D)": "5D", "10 Hari (10D)": "10D",
-                    "1 Bulan (1M)": "1M", "3 Bulan (3M)": "3M", "6 Bulan (6M)": "6M",
-                    "1 Tahun (1Y)": "1Y", "3 Tahun (3Y)": "3Y", "5 Tahun (5Y)": "5Y",
-                    "10 Tahun (10Y)": "10Y"
-                }
-                selected_label_gran = st.selectbox("Interval Grafik Mentah (Granularitas):", list(interval_mapping.keys()), index=0, key="bond_granularity")
-                gran_code = interval_mapping[selected_label_gran]
+#             # --- PANEL KONTROL WAKTU ---
+#             st.subheader("⏱️ Kontrol Rentang & Jarak Waktu")
+#             col_t1, col_t2 = st.columns(2)
+#             with col_t1:
+#                 interval_mapping = {
+#                     "Harian (1D)": "1D", "5 Hari (5D)": "5D", "10 Hari (10D)": "10D",
+#                     "1 Bulan (1M)": "1M", "3 Bulan (3M)": "3M", "6 Bulan (6M)": "6M",
+#                     "1 Tahun (1Y)": "1Y", "3 Tahun (3Y)": "3Y", "5 Tahun (5Y)": "5Y",
+#                     "10 Tahun (10Y)": "10Y"
+#                 }
+#                 selected_label_gran = st.selectbox("Interval Grafik Mentah (Granularitas):", list(interval_mapping.keys()), index=0, key="bond_granularity")
+#                 gran_code = interval_mapping[selected_label_gran]
                 
-            with col_t2:
-                yield_options = {"YTD": "YTD", "1 Bulan": "1M", "3 Bulan": "3M", "6 Bulan": "6M", "1 Tahun": "1Y", "2 Tahun": "2Y", "3 Tahun": "3Y", "5 Tahun": "5Y"}
-                selected_label_rebase = st.selectbox("Rentang Waktu Grafik Persentase (Rebasing):", list(yield_options.keys()), index=4, key="bond_rebase")
-                rebase_code = yield_options[selected_label_rebase]
+#             with col_t2:
+#                 yield_options = {"YTD": "YTD", "1 Bulan": "1M", "3 Bulan": "3M", "6 Bulan": "6M", "1 Tahun": "1Y", "2 Tahun": "2Y", "3 Tahun": "3Y", "5 Tahun": "5Y"}
+#                 selected_label_rebase = st.selectbox("Rentang Waktu Grafik Persentase (Rebasing):", list(yield_options.keys()), index=4, key="bond_rebase")
+#                 rebase_code = yield_options[selected_label_rebase]
 
-            # --- FUNGSI PEMBANTU (HELPER FUNCTIONS) ---
-            def apply_granularity(df, code):
-                if df.empty or code == "1D": return df
-                if code == "5D": return df.iloc[::-5][::-1]
-                if code == "10D": return df.iloc[::-10][::-1]
+#             # --- FUNGSI PEMBANTU (HELPER FUNCTIONS) ---
+#             def apply_granularity(df, code):
+#                 if df.empty or code == "1D": return df
+#                 if code == "5D": return df.iloc[::-5][::-1]
+#                 if code == "10D": return df.iloc[::-10][::-1]
                 
-                resample_new = {"1M": "ME", "3M": "3ME", "6M": "6ME", "1Y": "YE", "3Y": "3YE", "5Y": "5YE", "10Y": "10YE"}
-                resample_old = {"1M": "M", "3M": "3M", "6M": "6M", "1Y": "Y", "3Y": "3Y", "5Y": "5Y", "10Y": "10Y"}
-                try: return df.resample(resample_new[code]).last().dropna(how='all')
-                except: return df.resample(resample_old[code]).last().dropna(how='all')
+#                 resample_new = {"1M": "ME", "3M": "3ME", "6M": "6ME", "1Y": "YE", "3Y": "3YE", "5Y": "5YE", "10Y": "10YE"}
+#                 resample_old = {"1M": "M", "3M": "3M", "6M": "6M", "1Y": "Y", "3Y": "3Y", "5Y": "5Y", "10Y": "10Y"}
+#                 try: return df.resample(resample_new[code]).last().dropna(how='all')
+#                 except: return df.resample(resample_old[code]).last().dropna(how='all')
 
-            def apply_rebasing(df, y_code):
-                if df.empty: return pd.DataFrame()
-                latest_date = df.index.max()
-                if y_code == "YTD": start_date = pd.Timestamp(latest_date.year, 1, 1)
-                elif "M" in y_code: start_date = latest_date - pd.DateOffset(months=int(y_code.replace("M", "")))
-                elif "Y" in y_code: start_date = latest_date - pd.DateOffset(years=int(y_code.replace("Y", "")))
-                else: start_date = df.index.min()
+#             def apply_rebasing(df, y_code):
+#                 if df.empty: return pd.DataFrame()
+#                 latest_date = df.index.max()
+#                 if y_code == "YTD": start_date = pd.Timestamp(latest_date.year, 1, 1)
+#                 elif "M" in y_code: start_date = latest_date - pd.DateOffset(months=int(y_code.replace("M", "")))
+#                 elif "Y" in y_code: start_date = latest_date - pd.DateOffset(years=int(y_code.replace("Y", "")))
+#                 else: start_date = df.index.min()
 
-                df_sliced = df.loc[start_date:latest_date].copy()
-                if not df_sliced.empty and len(df_sliced) > 1:
-                    df_rebased = (df_sliced / df_sliced.iloc[0]) - 1
-                    return df_rebased * 100
-                return pd.DataFrame()
+#                 df_sliced = df.loc[start_date:latest_date].copy()
+#                 if not df_sliced.empty and len(df_sliced) > 1:
+#                     df_rebased = (df_sliced / df_sliced.iloc[0]) - 1
+#                     return df_rebased * 100
+#                 return pd.DataFrame()
 
-            def add_end_annotations(fig, df_plot):
-                if df_plot.empty: return fig
-                line_colors = {trace.name: trace.line.color for trace in fig.data}
-                last_date = df_plot.index[-1]
-                for col in df_plot.columns:
-                    last_val = df_plot[col].dropna().iloc[-1] if not df_plot[col].dropna().empty else None
-                    if last_val is not None:
-                        bg_color = line_colors.get(col, "gray")
-                        fig.add_annotation(
-                            x=last_date, y=last_val, text=f"<b>{last_val:.2f}%</b>",
-                            showarrow=False, xanchor="left", xshift=8, 
-                            font=dict(size=11, color="white"), bgcolor=bg_color, borderpad=3, opacity=0.9
-                        )
-                fig.update_layout(margin=dict(r=70))
-                return fig
+#             def add_end_annotations(fig, df_plot):
+#                 if df_plot.empty: return fig
+#                 line_colors = {trace.name: trace.line.color for trace in fig.data}
+#                 last_date = df_plot.index[-1]
+#                 for col in df_plot.columns:
+#                     last_val = df_plot[col].dropna().iloc[-1] if not df_plot[col].dropna().empty else None
+#                     if last_val is not None:
+#                         bg_color = line_colors.get(col, "gray")
+#                         fig.add_annotation(
+#                             x=last_date, y=last_val, text=f"<b>{last_val:.2f}%</b>",
+#                             showarrow=False, xanchor="left", xshift=8, 
+#                             font=dict(size=11, color="white"), bgcolor=bg_color, borderpad=3, opacity=0.9
+#                         )
+#                 fig.update_layout(margin=dict(r=70))
+#                 return fig
 
-            legend_layout_gov = dict(orientation="h", yanchor="top", y=-0.2, xanchor="center", x=0.5, title=None)
+#             legend_layout_gov = dict(orientation="h", yanchor="top", y=-0.2, xanchor="center", x=0.5, title=None)
 
-            # Tarik data utuh untuk instrumen terpilih dan tambal data bolong
-            df_price_raw = df_gov_bonds_price_full[selected_gov_bonds].ffill().bfill()
-            df_yield_raw = df_gov_bonds_yield_full[selected_gov_bonds].ffill().bfill() if not df_gov_bonds_yield_full.empty else pd.DataFrame()
+#             # Tarik data utuh untuk instrumen terpilih dan tambal data bolong
+#             df_price_raw = df_gov_bonds_price_full[selected_gov_bonds].ffill().bfill()
+#             df_yield_raw = df_gov_bonds_yield_full[selected_gov_bonds].ffill().bfill() if not df_gov_bonds_yield_full.empty else pd.DataFrame()
 
-            # ==========================================
-            # SEGMEN 1: ASK PRICE (HARGA PENAWARAN)
-            # ==========================================
-            st.divider()
-            st.subheader("📊 Analisis Harga Obligasi (Ask Price)")
+#             # ==========================================
+#             # SEGMEN 1: ASK PRICE (HARGA PENAWARAN)
+#             # ==========================================
+#             st.divider()
+#             st.subheader("📊 Analisis Harga Obligasi (Ask Price)")
             
-            tab_p1, tab_p2 = st.tabs(["1. Harga Mentah (Granularitas)", "2. Persentase Kenaikan (Rebasing)"])
+#             tab_p1, tab_p2 = st.tabs(["1. Harga Mentah (Granularitas)", "2. Persentase Kenaikan (Rebasing)"])
             
-            with tab_p1:
-                df_p_gran = apply_granularity(df_price_raw, gran_code)
-                fig_p1 = px.line(df_p_gran, x=df_p_gran.index, y=df_p_gran.columns, title=f"Harga Aktual - Interval {selected_label_gran}")
-                if gran_code != "1D": fig_p1.update_traces(mode='lines+markers')
-                fig_p1.update_layout(xaxis_title="Tanggal", yaxis_title="Ask Price", legend=legend_layout_gov, hovermode="x unified")
-                st.plotly_chart(fig_p1, use_container_width=True)
+#             with tab_p1:
+#                 df_p_gran = apply_granularity(df_price_raw, gran_code)
+#                 fig_p1 = px.line(df_p_gran, x=df_p_gran.index, y=df_p_gran.columns, title=f"Harga Aktual - Interval {selected_label_gran}")
+#                 if gran_code != "1D": fig_p1.update_traces(mode='lines+markers')
+#                 fig_p1.update_layout(xaxis_title="Tanggal", yaxis_title="Ask Price", legend=legend_layout_gov, hovermode="x unified")
+#                 st.plotly_chart(fig_p1, use_container_width=True)
 
-            with tab_p2:
-                df_p_rebase = apply_rebasing(df_price_raw, rebase_code)
-                if not df_p_rebase.empty:
-                    fig_p2 = px.line(df_p_rebase, x=df_p_rebase.index, y=df_p_rebase.columns, title=f"Persentase Kenaikan Harga ({selected_label_rebase})")
-                    fig_p2.add_hline(y=0, line_dash="dash", line_color="gray", opacity=0.5)
-                    fig_p2.update_yaxes(ticksuffix="%")
-                    fig_p2 = add_end_annotations(fig_p2, df_p_rebase)
-                    fig_p2.update_layout(xaxis_title="Tanggal", yaxis_title="Perubahan Harga (%)", legend=legend_layout_gov, hovermode="x unified")
-                    st.plotly_chart(fig_p2, use_container_width=True)
-                else:
-                    st.warning("Data tidak mencukupi untuk Rebasing.")
+#             with tab_p2:
+#                 df_p_rebase = apply_rebasing(df_price_raw, rebase_code)
+#                 if not df_p_rebase.empty:
+#                     fig_p2 = px.line(df_p_rebase, x=df_p_rebase.index, y=df_p_rebase.columns, title=f"Persentase Kenaikan Harga ({selected_label_rebase})")
+#                     fig_p2.add_hline(y=0, line_dash="dash", line_color="gray", opacity=0.5)
+#                     fig_p2.update_yaxes(ticksuffix="%")
+#                     fig_p2 = add_end_annotations(fig_p2, df_p_rebase)
+#                     fig_p2.update_layout(xaxis_title="Tanggal", yaxis_title="Perubahan Harga (%)", legend=legend_layout_gov, hovermode="x unified")
+#                     st.plotly_chart(fig_p2, use_container_width=True)
+#                 else:
+#                     st.warning("Data tidak mencukupi untuk Rebasing.")
 
-            # ==========================================
-            # SEGMEN 2: ASK YIELD (IMBAL HASIL)
-            # ==========================================
-            st.divider()
-            st.subheader("📉 Analisis Imbal Hasil (Ask Yield)")
+#             # ==========================================
+#             # SEGMEN 2: ASK YIELD (IMBAL HASIL)
+#             # ==========================================
+#             st.divider()
+#             st.subheader("📉 Analisis Imbal Hasil (Ask Yield)")
             
-            if not df_yield_raw.empty:
-                tab_y1, tab_y2 = st.tabs(["1. Yield Mentah (Granularitas)", "2. Persentase Perubahan (Rebasing)"])
+#             if not df_yield_raw.empty:
+#                 tab_y1, tab_y2 = st.tabs(["1. Yield Mentah (Granularitas)", "2. Persentase Perubahan (Rebasing)"])
                 
-                with tab_y1:
-                    df_y_gran = apply_granularity(df_yield_raw, gran_code)
-                    fig_y1 = px.line(df_y_gran, x=df_y_gran.index, y=df_y_gran.columns, title=f"Yield Aktual (%) - Interval {selected_label_gran}")
-                    if gran_code != "1D": fig_y1.update_traces(mode='lines+markers')
-                    fig_y1.update_layout(xaxis_title="Tanggal", yaxis_title="Ask Yield (%)", legend=legend_layout_gov, hovermode="x unified")
-                    st.plotly_chart(fig_y1, use_container_width=True)
+#                 with tab_y1:
+#                     df_y_gran = apply_granularity(df_yield_raw, gran_code)
+#                     fig_y1 = px.line(df_y_gran, x=df_y_gran.index, y=df_y_gran.columns, title=f"Yield Aktual (%) - Interval {selected_label_gran}")
+#                     if gran_code != "1D": fig_y1.update_traces(mode='lines+markers')
+#                     fig_y1.update_layout(xaxis_title="Tanggal", yaxis_title="Ask Yield (%)", legend=legend_layout_gov, hovermode="x unified")
+#                     st.plotly_chart(fig_y1, use_container_width=True)
 
-                with tab_y2:
-                    df_y_rebase = apply_rebasing(df_yield_raw, rebase_code)
-                    if not df_y_rebase.empty:
-                        fig_y2 = px.line(df_y_rebase, x=df_y_rebase.index, y=df_y_rebase.columns, title=f"Persentase Perubahan Yield ({selected_label_rebase})")
-                        fig_y2.add_hline(y=0, line_dash="dash", line_color="gray", opacity=0.5)
-                        fig_y2.update_yaxes(ticksuffix="%")
-                        fig_y2 = add_end_annotations(fig_y2, df_y_rebase)
-                        fig_y2.update_layout(xaxis_title="Tanggal", yaxis_title="Perubahan Yield (%)", legend=legend_layout_gov, hovermode="x unified")
-                        st.plotly_chart(fig_y2, use_container_width=True)
-                    else:
-                        st.warning("Data Yield tidak mencukupi untuk Rebasing.")
-            else:
-                st.warning("Data Yield tidak tersedia sama sekali di database.")
-        else:
-            st.info("Pilih minimal 1 seri obligasi.")
-    else:
-        st.warning("Data Obligasi Negara tidak tersedia di database.")
+#                 with tab_y2:
+#                     df_y_rebase = apply_rebasing(df_yield_raw, rebase_code)
+#                     if not df_y_rebase.empty:
+#                         fig_y2 = px.line(df_y_rebase, x=df_y_rebase.index, y=df_y_rebase.columns, title=f"Persentase Perubahan Yield ({selected_label_rebase})")
+#                         fig_y2.add_hline(y=0, line_dash="dash", line_color="gray", opacity=0.5)
+#                         fig_y2.update_yaxes(ticksuffix="%")
+#                         fig_y2 = add_end_annotations(fig_y2, df_y_rebase)
+#                         fig_y2.update_layout(xaxis_title="Tanggal", yaxis_title="Perubahan Yield (%)", legend=legend_layout_gov, hovermode="x unified")
+#                         st.plotly_chart(fig_y2, use_container_width=True)
+#                     else:
+#                         st.warning("Data Yield tidak mencukupi untuk Rebasing.")
+#             else:
+#                 st.warning("Data Yield tidak tersedia sama sekali di database.")
+#         else:
+#             st.info("Pilih minimal 1 seri obligasi.")
+#     else:
+#         st.warning("Data Obligasi Negara tidak tersedia di database.")
 
-    st.divider()
-# ==================== TAB 7: REKOMENDASI FUNDAMENTAL (MANUAL UPLOAD) ====================
-with tab_recommendation:
-    st.header("🎯 Peringkat Fundamental (Data Manual)")
-    st.info("Unggah file Excel atau CSV berisi metrik fundamental. Sistem memprioritaskan skor tinggi untuk Alpha/Sharpe/Treynor dan skor rendah untuk StdDev.")
+#     st.divider()
+# # ==================== TAB 7: REKOMENDASI FUNDAMENTAL (MANUAL UPLOAD) ====================
+# with tab_recommendation:
+#     st.header("🎯 Peringkat Fundamental (Data Manual)")
+#     st.info("Unggah file Excel atau CSV berisi metrik fundamental. Sistem memprioritaskan skor tinggi untuk Alpha/Sharpe/Treynor dan skor rendah untuk StdDev.")
 
-    # 1. Definisikan Template Contoh Data
-    template_data = pd.DataFrame({
-        'Nama Produk': ['Reksa Dana A', 'Reksa Dana B', 'Reksa Dana C'],
-        'Alpha': [0.0521, 0.0310, 0.0415],
-        'Beta': [1.05, 0.95, 1.10],
-        'Sharpe': [0.12, 0.09, 0.15],
-        'Treynor': [0.08, 0.05, 0.10],
-        'StdDev': [0.15, 0.11, 0.18]
-    })
+#     # 1. Definisikan Template Contoh Data
+#     template_data = pd.DataFrame({
+#         'Nama Produk': ['Reksa Dana A', 'Reksa Dana B', 'Reksa Dana C'],
+#         'Alpha': [0.0521, 0.0310, 0.0415],
+#         'Beta': [1.05, 0.95, 1.10],
+#         'Sharpe': [0.12, 0.09, 0.15],
+#         'Treynor': [0.08, 0.05, 0.10],
+#         'StdDev': [0.15, 0.11, 0.18]
+#     })
 
-    # 2. Komponen Upload File
-    uploaded_file = st.file_uploader("Unggah Dokumen Metrik (Excel / CSV)", type=["xlsx", "csv"], key="fund_uploader")
+#     # 2. Komponen Upload File
+#     uploaded_file = st.file_uploader("Unggah Dokumen Metrik (Excel / CSV)", type=["xlsx", "csv"], key="fund_uploader")
     
-    # Flag status validasi
-    data_valid = False
-    df_fund = pd.DataFrame()
+#     # Flag status validasi
+#     data_valid = False
+#     df_fund = pd.DataFrame()
 
-    # 3. Proses Validasi File
-    if uploaded_file is not None:
-        try:
-            if uploaded_file.name.endswith('.csv'):
-                df_fund = pd.read_csv(uploaded_file)
-            else:
-                df_fund = pd.read_excel(uploaded_file)
+#     # 3. Proses Validasi File
+#     if uploaded_file is not None:
+#         try:
+#             if uploaded_file.name.endswith('.csv'):
+#                 df_fund = pd.read_csv(uploaded_file)
+#             else:
+#                 df_fund = pd.read_excel(uploaded_file)
             
-            # Standarisasi kolom identitas
-            if 'Nama Produk' not in df_fund.columns and 'Instrument' in df_fund.columns:
-                df_fund = df_fund.rename(columns={'Instrument': 'Nama Produk'})
+#             # Standarisasi kolom identitas
+#             if 'Nama Produk' not in df_fund.columns and 'Instrument' in df_fund.columns:
+#                 df_fund = df_fund.rename(columns={'Instrument': 'Nama Produk'})
                 
-            # Cek ketersediaan kolom wajib
-            required_metrics = ['Alpha', 'Beta', 'Sharpe', 'Treynor', 'StdDev']
-            available_metrics = [c for c in required_metrics if c in df_fund.columns]
+#             # Cek ketersediaan kolom wajib
+#             required_metrics = ['Alpha', 'Beta', 'Sharpe', 'Treynor', 'StdDev']
+#             available_metrics = [c for c in required_metrics if c in df_fund.columns]
             
-            if 'Nama Produk' in df_fund.columns and len(available_metrics) > 0:
-                data_valid = True
-            else:
-                st.error("❌ Format file tidak sesuai! Pastikan terdapat kolom 'Nama Produk' dan minimal satu kolom metrik yang penulisannya persis seperti contoh.")
-        except Exception as e:
-            st.error(f"❌ Gagal membaca dokumen: {e}")
+#             if 'Nama Produk' in df_fund.columns and len(available_metrics) > 0:
+#                 data_valid = True
+#             else:
+#                 st.error("❌ Format file tidak sesuai! Pastikan terdapat kolom 'Nama Produk' dan minimal satu kolom metrik yang penulisannya persis seperti contoh.")
+#         except Exception as e:
+#             st.error(f"❌ Gagal membaca dokumen: {e}")
 
-    # 4. Logika Tampilan (Render UI)
-    if not data_valid:
-        # Jika belum ada file atau file salah, tampilkan panduan & template
-        st.write("### 💡 Contoh Format Tabel yang Diterima")
-        st.caption("Pastikan nama kolom di baris pertama persis seperti contoh di bawah ini. Kolom yang tidak tersedia/kosong akan diabaikan secara otomatis.")
-        st.dataframe(template_data, hide_index=True, use_container_width=True)
+#     # 4. Logika Tampilan (Render UI)
+#     if not data_valid:
+#         # Jika belum ada file atau file salah, tampilkan panduan & template
+#         st.write("### 💡 Contoh Format Tabel yang Diterima")
+#         st.caption("Pastikan nama kolom di baris pertama persis seperti contoh di bawah ini. Kolom yang tidak tersedia/kosong akan diabaikan secara otomatis.")
+#         st.dataframe(template_data, hide_index=True, use_container_width=True)
         
-    else:
-        # Jika file valid, sembunyikan template dan jalankan kalkulasi
-        df_fund = df_fund.set_index('Nama Produk')
+#     else:
+#         # Jika file valid, sembunyikan template dan jalankan kalkulasi
+#         df_fund = df_fund.set_index('Nama Produk')
         
-        # Konversi tipe data ke numerik
-        for col in available_metrics:
-            df_fund[col] = pd.to_numeric(df_fund[col], errors='coerce')
+#         # Konversi tipe data ke numerik
+#         for col in available_metrics:
+#             df_fund[col] = pd.to_numeric(df_fund[col], errors='coerce')
             
-        # Hapus baris yang tidak memiliki angka sama sekali di bagian metrik
-        df_fund = df_fund.dropna(subset=available_metrics, how='all')
+#         # Hapus baris yang tidak memiliki angka sama sekali di bagian metrik
+#         df_fund = df_fund.dropna(subset=available_metrics, how='all')
         
-        if not df_fund.empty:
-            with st.spinner("Mengkalkulasi peringkat komposit..."):
-                # Ranking: Skor 1 untuk metrik tertinggi
-                if 'Alpha' in df_fund.columns: df_fund['Rank_Alpha'] = df_fund['Alpha'].rank(ascending=False, method='min')
-                if 'Sharpe' in df_fund.columns: df_fund['Rank_Sharpe'] = df_fund['Sharpe'].rank(ascending=False, method='min')
-                if 'Treynor' in df_fund.columns: df_fund['Rank_Treynor'] = df_fund['Treynor'].rank(ascending=False, method='min')
+#         if not df_fund.empty:
+#             with st.spinner("Mengkalkulasi peringkat komposit..."):
+#                 # Ranking: Skor 1 untuk metrik tertinggi
+#                 if 'Alpha' in df_fund.columns: df_fund['Rank_Alpha'] = df_fund['Alpha'].rank(ascending=False, method='min')
+#                 if 'Sharpe' in df_fund.columns: df_fund['Rank_Sharpe'] = df_fund['Sharpe'].rank(ascending=False, method='min')
+#                 if 'Treynor' in df_fund.columns: df_fund['Rank_Treynor'] = df_fund['Treynor'].rank(ascending=False, method='min')
                 
-                # Beta dikalkulasi sesuai kodemu (skor tinggi = nilai besar)
-                if 'Beta' in df_fund.columns: df_fund['Rank_Beta'] = df_fund['Beta'].rank(ascending=False, method='max')  
+#                 # Beta dikalkulasi sesuai kodemu (skor tinggi = nilai besar)
+#                 if 'Beta' in df_fund.columns: df_fund['Rank_Beta'] = df_fund['Beta'].rank(ascending=False, method='max')  
                 
-                # Ranking: Skor 1 untuk metrik terendah (Risiko)
-                if 'StdDev' in df_fund.columns: df_fund['Rank_StdDev'] = df_fund['StdDev'].rank(ascending=True, method='min')
+#                 # Ranking: Skor 1 untuk metrik terendah (Risiko)
+#                 if 'StdDev' in df_fund.columns: df_fund['Rank_StdDev'] = df_fund['StdDev'].rank(ascending=True, method='min')
                 
-                rank_cols = [c for c in df_fund.columns if c.startswith('Rank_')]
+#                 rank_cols = [c for c in df_fund.columns if c.startswith('Rank_')]
  
-                if rank_cols:
-                    # Hitung Skor Akhir (Rata-rata peringkat)
-                    df_fund['Total_Score'] = df_fund[rank_cols].mean(axis=1)
-                    df_fund['Final_Rank'] = df_fund['Total_Score'].rank(ascending=True, method='min')
+#                 if rank_cols:
+#                     # Hitung Skor Akhir (Rata-rata peringkat)
+#                     df_fund['Total_Score'] = df_fund[rank_cols].mean(axis=1)
+#                     df_fund['Final_Rank'] = df_fund['Total_Score'].rank(ascending=True, method='min')
                     
-                    # Urutkan dari Peringkat 1
-                    df_fund = df_fund.sort_values('Final_Rank')
+#                     # Urutkan dari Peringkat 1
+#                     df_fund = df_fund.sort_values('Final_Rank')
                     
-                    # Susun kolom berdampingan (Nilai Mentah -> Peringkatnya)
-                    cols_order = []
-                    for col in available_metrics:
-                        cols_order.append(col)
-                        rank_col_name = f'Rank_{col}'
-                        if rank_col_name in df_fund.columns:
-                            cols_order.append(rank_col_name)
+#                     # Susun kolom berdampingan (Nilai Mentah -> Peringkatnya)
+#                     cols_order = []
+#                     for col in available_metrics:
+#                         cols_order.append(col)
+#                         rank_col_name = f'Rank_{col}'
+#                         if rank_col_name in df_fund.columns:
+#                             cols_order.append(rank_col_name)
                     
-                    # Masukkan kolom tambahan di luar metrik utama jika ada
-                    extra_cols = [c for c in df_fund.columns if c not in cols_order and c not in ['Total_Score', 'Final_Rank']]
+#                     # Masukkan kolom tambahan di luar metrik utama jika ada
+#                     extra_cols = [c for c in df_fund.columns if c not in cols_order and c not in ['Total_Score', 'Final_Rank']]
                     
-                    # Gabungkan urutan akhir
-                    final_cols = extra_cols + cols_order + ['Total_Score', 'Final_Rank']
-                    df_display = df_fund[final_cols].copy()
+#                     # Gabungkan urutan akhir
+#                     final_cols = extra_cols + cols_order + ['Total_Score', 'Final_Rank']
+#                     df_display = df_fund[final_cols].copy()
                     
-                    # Ubah nama kolom agar rapi saat ditampilkan
-                    rename_map = {
-                        'Total_Score': 'Total Skor',
-                        'Final_Rank': 'Peringkat Akhir'
-                    }
-                    for col in available_metrics:
-                        rename_map[f'Rank_{col}'] = f'Rank {col}'
+#                     # Ubah nama kolom agar rapi saat ditampilkan
+#                     rename_map = {
+#                         'Total_Score': 'Total Skor',
+#                         'Final_Rank': 'Peringkat Akhir'
+#                     }
+#                     for col in available_metrics:
+#                         rename_map[f'Rank_{col}'] = f'Rank {col}'
                         
-                    df_display = df_display.rename(columns=rename_map)
+#                     df_display = df_display.rename(columns=rename_map)
                     
-                    # Atur jumlah desimal untuk semua kolom dengan nama baru
-                    format_dict = {}
-                    for col in df_display.columns:
-                        if col in available_metrics:
-                            format_dict[col] = "{:.4f}"
-                        elif col.startswith('Rank ') or col == 'Peringkat Akhir':
-                            format_dict[col] = "{:.0f}"
-                        elif col == 'Total Skor':
-                            format_dict[col] = "{:.2f}"
+#                     # Atur jumlah desimal untuk semua kolom dengan nama baru
+#                     format_dict = {}
+#                     for col in df_display.columns:
+#                         if col in available_metrics:
+#                             format_dict[col] = "{:.4f}"
+#                         elif col.startswith('Rank ') or col == 'Peringkat Akhir':
+#                             format_dict[col] = "{:.0f}"
+#                         elif col == 'Total Skor':
+#                             format_dict[col] = "{:.2f}"
                     
-                    # Warnai baris pemenang
-                    styled_df = (
-                        df_display.style
-                        .background_gradient(subset=['Peringkat Akhir'], cmap='RdYlGn_r')
-                        .format(format_dict)
-                    )
+#                     # Warnai baris pemenang
+#                     styled_df = (
+#                         df_display.style
+#                         .background_gradient(subset=['Peringkat Akhir'], cmap='RdYlGn_r')
+#                         .format(format_dict)
+#                     )
                     
-                    st.success("✅ Dokumen berhasil diproses.")
-                    st.subheader("📋 Peringkat Fundamental Komposit")
-                    st.dataframe(styled_df, use_container_width=True, height=600)
-                else:
-                    st.warning("Data tidak memiliki kolom performa/risiko yang valid untuk dihitung peringkatnya.")
-        else:
-            st.warning("Data kosong setelah dibersihkan. Pastikan sel metrik berisi angka yang valid.")
+#                     st.success("✅ Dokumen berhasil diproses.")
+#                     st.subheader("📋 Peringkat Fundamental Komposit")
+#                     st.dataframe(styled_df, use_container_width=True, height=600)
+#                 else:
+#                     st.warning("Data tidak memiliki kolom performa/risiko yang valid untuk dihitung peringkatnya.")
+#         else:
+#             st.warning("Data kosong setelah dibersihkan. Pastikan sel metrik berisi angka yang valid.")
 # ==================== FOOTER ====================
 st.divider()
 st.caption("Data disediakan oleh Refinitiv. Dashboard ini untuk tujuan informasi dan edukasi.")
