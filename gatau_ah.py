@@ -482,9 +482,9 @@ def calculate_metrics(price_data, benchmark_series, risk_free_rate, eval_window=
         metrics_df['Climb_1d'] = get_safe_past_rank(1) - rank_today
         metrics_df['Climb_7d'] = get_safe_past_rank(7) - rank_today
         metrics_df['Climb_14d'] = get_safe_past_rank(14) - rank_today
-        metrics_df['Climb_22d'] = get_safe_past_rank(22) - rank_today
+        metrics_df['climb_21d'] = get_safe_past_rank(22) - rank_today
     else:
-        for c in ['Climb_1d', 'Climb_7d', 'Climb_14d', 'Climb_22d']: metrics_df[c] = 0
+        for c in ['Climb_1d', 'Climb_7d', 'Climb_14d', 'climb_21d']: metrics_df[c] = 0
             
     mean_price = price_data_risk.mean()
     std_price = price_data_risk.std()
@@ -571,7 +571,7 @@ def calculate_ranking_scores(metrics_df, weights=None):
             'Consist_7d_Top5': w, 'Consist_7d_Top10': w, 'Consist_7d_Top20': w,
             'Consist_14d_Top5': w, 'Consist_14d_Top10': w, 'Consist_14d_Top20': w,
             'Consist_21d_Top5': w, 'Consist_21d_Top10': w, 'Consist_21d_Top20': w,
-            'Climb_1d': w, 'Climb_7d': w, 'Climb_14d': w, 'Climb_22d': w
+            'Climb_1d': w, 'Climb_7d': w, 'Climb_14d': w, 'climb_21d': w
         }
     
     df_scaled = metrics_df.copy()
@@ -1307,7 +1307,7 @@ elif scoring_mode == "Fokus Konsistensi":
     consist_keys = [f"Consist_{d}_Top{n}" for d in ['1d','7d','14d','21d'] for n in [5,10,20]]
     weights_dict = {k: 1.0/12.0 for k in consist_keys}
 elif scoring_mode == "Fokus Momentum (Climbers)":
-    climb_keys = ['Climb_1d', 'Climb_7d', 'Climb_14d', 'Climb_22d']
+    climb_keys = ['Climb_1d', 'Climb_7d', 'Climb_14d', 'climb_21d']
     weights_dict = {k: 0.25 for k in climb_keys}
 elif scoring_mode == "Fokus Valuasi (Murah/Mahal)":
     weights_dict = { 'Z_Score': -1.0 }
@@ -1831,7 +1831,7 @@ with tab_performance:
             'Consist_14d_Top5', 'Consist_14d_Top10', 'Consist_14d_Top20',
             'Consist_21d_Top5', 'Consist_21d_Top10', 'Consist_21d_Top20'
         ]
-        climb_metrics = ['Climb_1d', 'Climb_7d', 'Climb_14d', 'Climb_22d']
+        climb_metrics = ['Climb_1d', 'Climb_7d', 'Climb_14d', 'climb_21d']
         val_metrics = ['Z_Score', 'Status_Valuasi', 'Skor_Valuasi']
         
         # 2. Filter Dinamis Sesuai Mode di Sidebar
