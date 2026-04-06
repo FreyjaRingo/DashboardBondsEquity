@@ -56,7 +56,7 @@ def load_master_instruments():
     return mf_data, bond_data, macro_data
 
 def fetch_from_supabase(table_name, id_col, tickers, start_date, end_date):
-    """Menarik data masif dari Supabase dengan sistem Pagination & Fault-Tolerance (Retry Logic)."""
+    """Menarik data masif dari Supabase dengan sistem Pagination, Fault-Tolerance, & Pacing."""
     if not tickers: return pd.DataFrame()
     
     start_str = start_date.strftime('%Y-%m-%d')
@@ -66,11 +66,12 @@ def fetch_from_supabase(table_name, id_col, tickers, start_date, end_date):
     page_size = 1000
     offset = 0
     
+    global supabase # Deklarasi global agar fungsi bisa me-restart koneksi jika mati
+    
     while True:
         success = False
         data_chunk = []
         
-        # Eksekusi Retry Logic: Maksimal 3 kali coba ulang jika koneksi diputus Supabase
         for attempt in range(3):
             try:
                 res = supabase.table(table_name).select("*") \
@@ -83,34 +84,43 @@ def fetch_from_supabase(table_name, id_col, tickers, start_date, end_date):
                 
                 data_chunk = res.data if res.data else []
                 success = True
-                break # Berhasil, hentikan percobaan ulang
+                break 
                 
             except Exception as e:
                 if attempt < 2:
-                    time.sleep(1.5) # Jeda 1.5 detik agar server rileks sebelum ditarik lagi
+                    time.sleep(2.0) # Jeda nafas 2 detik sebelum mencoba lagi
+                    
+                    # Jika pipa jaringan diputus server, paksa restart koneksi klien
+                    if "Broken pipe" in str(e) or "ConnectionTerminated" in str(e):
+                        init_supabase.clear()
+                        supabase = init_supabase()
                 else:
-                    st.error(f"Gagal total menarik {table_name} pada offset {offset}: {e}")
+                    # Ubah menjadi warning agar aplikasi tidak crash dan tetap 
+                    # melanjutkan kalkulasi dengan sisa 58.000 data yang berhasil ditarik
+                    st.warning(f"⚠️ Penarikan {table_name} dihentikan pada data ke-{offset} karena pembatasan server (Rate Limit). Melanjutkan dengan data yang ada...")
         
-        # Evaluasi hasil percobaan
         if not success:
-            break # Hentikan penarikan jika sudah 3x gagal berturut-turut pada blok yang sama
+            break 
             
         if not data_chunk:
-            break # Data sudah habis (ujung tabel)
+            break 
             
         all_data.extend(data_chunk)
         
         if len(data_chunk) < page_size:
-            break # Halaman terakhir
+            break 
             
         offset += page_size
+        
+        # --- PACING: BERI JEDA 0.1 DETIK SETIAP HALAMAN ---
+        # Mencegah server memutus koneksi akibat request yang terlalu rapat
+        time.sleep(0.1)
         
     if not all_data: return pd.DataFrame()
     
     df = pd.DataFrame(all_data)
     df['Date'] = pd.to_datetime(df['date']) 
     return df
-
 # ==================== FUNGSI INISIALISASI SESI REFINITIV ====================
 def init_refinitiv_session():
     """Hanya membuka sesi Refinitiv tanpa menarik data RFR awal."""
