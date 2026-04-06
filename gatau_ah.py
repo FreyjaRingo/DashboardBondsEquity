@@ -565,7 +565,7 @@ def calculate_ranking_scores(metrics_df, weights=None):
     w = 1.0 / 25.0
     if weights is None:
         weights = {
-            'Inception_Return': w, 'Return_1W': w, 'Return_1M': w, 'Return_3M': w,
+            'Return_1W': w, 'Return_1M': w, 'Return_3M': w,
             'Sharpe_Ratio': w, 'Alpha': w, 'Beta': w, 'Volatility': -w,
             'Consist_1d_Top5': w, 'Consist_1d_Top10': w, 'Consist_1d_Top20': w,
             'Consist_7d_Top5': w, 'Consist_7d_Top10': w, 'Consist_7d_Top20': w,
@@ -1300,7 +1300,8 @@ if not df_bond.empty:
 weights_dict = None  # Default (Balanced = dibagi rata 1/25)
 
 if scoring_mode == "Fokus Return (Profit)":
-    weights_dict = { 'Inception_Return': 0.25, 'Return_1W': 0.25, 'Return_1M': 0.25, 'Return_3M': 0.25 }
+    w_ret = 1.0 / 3.0
+    weights_dict = { 'Return_1W': w_ret, 'Return_1M': w_ret, 'Return_3M': w_ret }
 elif scoring_mode == "Fokus Risiko & Rasio":
     weights_dict = { 'Sharpe_Ratio': 0.25, 'Alpha': 0.25, 'Beta': 0.25, 'Volatility': -0.25 }
 elif scoring_mode == "Fokus Konsistensi":
@@ -1691,7 +1692,7 @@ with tab_performance:
     - **Konsistensi Peringkat (12 Metrik):** Frekuensi dan *streak* produk bertahan di Top 5, 10, dan 20 pada berbagai rentang waktu.
     - **Akselerasi Tren / Climbers (4 Metrik):** Perubahan posisi peringkat harian saat ini dibandingkan posisi 1, 7, 14, dan 22 hari perdagangan sebelumnya.
     - **Skor Valuasi (1 Metrik):** Penilaian kewajaran harga berdasarkan deviasi Z-Score (dibagi ke dalam 8 fraksi pita/bands).
-    - **Total Skor:** Rata-rata persentil dari ke-25 metrik di atas (distribusi bobot setara 4% per komponen pada mode Balanced).""")
+    - **Total Skor:** Rata-rata persentil dari ke-24 metrik di atas (distribusi bobot setara 4% per komponen pada mode Balanced).""")
     
     perf_type = st.radio("Pilih Kategori Aset", ["Equity", "Fixed Income"], horizontal=True, key="perf_type_radio")
     
