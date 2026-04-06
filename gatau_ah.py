@@ -56,7 +56,7 @@ def load_master_instruments():
     return mf_data, bond_data, macro_data
 
 def fetch_from_supabase(table_name, id_col, tickers, start_date, end_date):
-    """Fungsi pembantu untuk menarik data masif dari Supabase dengan Pagination & Ordering."""
+    """Menarik data masif dari Supabase dengan sistem Pagination & Fault-Tolerance (Retry Logic)."""
     if not tickers: return pd.DataFrame()
     
     start_str = start_date.strftime('%Y-%m-%d')
@@ -67,33 +67,49 @@ def fetch_from_supabase(table_name, id_col, tickers, start_date, end_date):
     offset = 0
     
     while True:
-        try:
-            res = supabase.table(table_name).select("*") \
-                .in_(id_col, tickers) \
-                .gte('date', start_str) \
-                .lte('date', end_str) \
-                .order('date') \
-                .range(offset, offset + page_size - 1) \
-                .execute()
+        success = False
+        data_chunk = []
+        
+        # Eksekusi Retry Logic: Maksimal 3 kali coba ulang jika koneksi diputus Supabase
+        for attempt in range(3):
+            try:
+                res = supabase.table(table_name).select("*") \
+                    .in_(id_col, tickers) \
+                    .gte('date', start_str) \
+                    .lte('date', end_str) \
+                    .order('date') \
+                    .range(offset, offset + page_size - 1) \
+                    .execute()
                 
-            if not res.data:
-                break
+                data_chunk = res.data if res.data else []
+                success = True
+                break # Berhasil, hentikan percobaan ulang
                 
-            all_data.extend(res.data)
+            except Exception as e:
+                if attempt < 2:
+                    time.sleep(1.5) # Jeda 1.5 detik agar server rileks sebelum ditarik lagi
+                else:
+                    st.error(f"Gagal total menarik {table_name} pada offset {offset}: {e}")
+        
+        # Evaluasi hasil percobaan
+        if not success:
+            break # Hentikan penarikan jika sudah 3x gagal berturut-turut pada blok yang sama
             
-            if len(res.data) < page_size:
-                break 
-                
-            offset += page_size
-        except Exception as e:
-            st.error(f"Error fetching from {table_name}: {e}")
-            break
+        if not data_chunk:
+            break # Data sudah habis (ujung tabel)
             
+        all_data.extend(data_chunk)
+        
+        if len(data_chunk) < page_size:
+            break # Halaman terakhir
+            
+        offset += page_size
+        
     if not all_data: return pd.DataFrame()
     
     df = pd.DataFrame(all_data)
-    # HAPUS .dt.date agar menjadi DatetimeIndex murni Pandas
     df['Date'] = pd.to_datetime(df['date']) 
+    return df
     return df
 
 # ==================== FUNGSI INISIALISASI SESI REFINITIV ====================
