@@ -110,7 +110,6 @@ def fetch_from_supabase(table_name, id_col, tickers, start_date, end_date):
     df = pd.DataFrame(all_data)
     df['Date'] = pd.to_datetime(df['date']) 
     return df
-    return df
 
 # ==================== FUNGSI INISIALISASI SESI REFINITIV ====================
 def init_refinitiv_session():
