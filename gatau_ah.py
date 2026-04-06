@@ -482,9 +482,9 @@ def calculate_metrics(price_data, benchmark_series, risk_free_rate, eval_window=
         metrics_df['Climb_1d'] = get_safe_past_rank(1) - rank_today
         metrics_df['Climb_7d'] = get_safe_past_rank(7) - rank_today
         metrics_df['Climb_14d'] = get_safe_past_rank(14) - rank_today
-        metrics_df['climb_21d'] = get_safe_past_rank(22) - rank_today
+        metrics_df['Climb_22d'] = get_safe_past_rank(22) - rank_today
     else:
-        for c in ['Climb_1d', 'Climb_7d', 'Climb_14d', 'climb_21d']: metrics_df[c] = 0
+        for c in ['Climb_1d', 'Climb_7d', 'Climb_14d', 'Climb_22d']: metrics_df[c] = 0
             
     mean_price = price_data_risk.mean()
     std_price = price_data_risk.std()
@@ -561,8 +561,8 @@ def calculate_rolling_timeseries(price_data, benchmark_series, risk_free_rate, w
     }
 
 @st.cache_data(max_entries=50, show_spinner=False)
-def calculate_ranking_scores(metrics_df, weights=None):
-    w = 1.0 / 25.0
+def calculate_ranking_scores(metrics_df, weights=None, young_funds_list=None):
+    w = 1.0 / 24.0 # Angka 24 menyesuaikan karena Inception_Return sudah dihapus
     if weights is None:
         weights = {
             'Return_1W': w, 'Return_1M': w, 'Return_3M': w,
@@ -571,10 +571,15 @@ def calculate_ranking_scores(metrics_df, weights=None):
             'Consist_7d_Top5': w, 'Consist_7d_Top10': w, 'Consist_7d_Top20': w,
             'Consist_14d_Top5': w, 'Consist_14d_Top10': w, 'Consist_14d_Top20': w,
             'Consist_21d_Top5': w, 'Consist_21d_Top10': w, 'Consist_21d_Top20': w,
-            'Climb_1d': w, 'Climb_7d': w, 'Climb_14d': w, 'climb_21d': w
+            'Climb_1d': w, 'Climb_7d': w, 'Climb_14d': w, 'Climb_22d': w
         }
     
     df_scaled = metrics_df.copy()
+    
+    # DISKUALIFIKASI PRODUK MUDA DARI SEMUA SKORING
+    if young_funds_list is not None:
+        df_scaled = df_scaled.drop(index=[x for x in young_funds_list if x in df_scaled.index], errors='ignore')
+
     df_scaled.replace([np.inf, -np.inf], np.nan, inplace=True)
     
     valid_metrics = [col for col in weights.keys() if col in df_scaled.columns]
@@ -620,7 +625,7 @@ def get_7d_ranking_history(price_data, benchmark_series, risk_free_rate, eval_wi
         # INJEKSI PARAMETER BARU
         metrics = calculate_metrics(sliced_prices, sliced_bench, risk_free_rate, eval_window=eval_window, young_funds_list=young_funds_list, bench_ticker=bench_ticker)
         if metrics is not None and not metrics.empty:
-            ranks = calculate_ranking_scores(metrics, weights=custom_weights)
+            ranks = calculate_ranking_scores(metrics, weights=custom_weights, young_funds_list=young_funds_list)
             if not ranks.empty:
                 rank_series = pd.Series(range(1, len(ranks) + 1), index=ranks.index)
                 date_str = date.strftime('%d/%m')
@@ -656,7 +661,7 @@ def get_detailed_ranking_history(price_data_full, benchmark_series_full, risk_fr
                 metrics = metrics.drop(index=stagnant_instruments, errors='ignore')
 
             if metrics.empty: continue
-            ranks = calculate_ranking_scores(metrics, weights=custom_weights)
+            ranks = calculate_ranking_scores(metrics, weights=custom_weights, young_funds_list=young_funds_list)
             if not ranks.empty:
                 rank_series = pd.Series(range(1, len(ranks) + 1), index=ranks.index)
                 date_str = date.strftime('%d/%m/%y') 
@@ -1138,10 +1143,16 @@ with st.sidebar:
 
 # ==================== HALAMAN UTAMA ====================
 st.title("📊 Investment Dashboard - Reksa Dana Indonesia")
-if st.session_state.start_date and st.session_state.end_date:
-    st.markdown(f"Periode Data: {st.session_state.start_date.strftime('%d %b %Y')} s/d {st.session_state.end_date.strftime('%d %b %Y')}")
+try:
+    display_start = analysis_start_date
+    display_end = analysis_end_date
+except NameError:
+    display_start = st.session_state.start_date
+    display_end = st.session_state.end_date
+if display_start and display_end:
+    st.markdown(f"Periode Data: **{display_start.strftime('%d %b %Y')} s/d {display_end.strftime('%d %b %Y')}**")
     st.markdown(f"Mata Uang Reksa Dana: **{st.session_state.fund_currency}**")
-    
+        
 # ==================== AMBIL DATA DARI CACHE ====================
 all_data, _, _ = load_all_data(
     st.session_state.start_date, 
@@ -1308,15 +1319,16 @@ elif scoring_mode == "Fokus Konsistensi":
     consist_keys = [f"Consist_{d}_Top{n}" for d in ['1d','7d','14d','21d'] for n in [5,10,20]]
     weights_dict = {k: 1.0/12.0 for k in consist_keys}
 elif scoring_mode == "Fokus Momentum (Climbers)":
-    climb_keys = ['Climb_1d', 'Climb_7d', 'Climb_14d', 'climb_21d']
+    climb_keys = ['Climb_1d', 'Climb_7d', 'Climb_14d', 'Climb_22d']
     weights_dict = {k: 0.25 for k in climb_keys}
 elif scoring_mode == "Fokus Valuasi (Murah/Mahal)":
     weights_dict = { 'Z_Score': -1.0 }
 
 # Hitung skor dengan menerapkan filter bobot
-ranked_products_all = calculate_ranking_scores(metrics_all, weights=weights_dict) if metrics_all is not None else pd.DataFrame()
-ranked_products_equity = calculate_ranking_scores(metrics_equity, weights=weights_dict) if metrics_equity is not None else pd.DataFrame()
-ranked_products_bond = calculate_ranking_scores(metrics_bond, weights=weights_dict) if metrics_bond is not None else pd.DataFrame()
+# Hitung skor dengan menerapkan filter bobot
+ranked_products_all = calculate_ranking_scores(metrics_all, weights=weights_dict, young_funds_list=young_all) if metrics_all is not None else pd.DataFrame()
+ranked_products_equity = calculate_ranking_scores(metrics_equity, weights=weights_dict, young_funds_list=young_all) if metrics_equity is not None else pd.DataFrame()
+ranked_products_bond = calculate_ranking_scores(metrics_bond, weights=weights_dict, young_funds_list=young_all) if metrics_bond is not None else pd.DataFrame()
 
 leaderboard_daily = calculate_daily_leaderboard(df_all_instruments, days=7)
 
@@ -1398,13 +1410,18 @@ with tab_overview:
             
             # Format teks ke persentase
             df_young[f'Return ({date_option})'] = (df_young['Interval_Return'] * 100).round(2).astype(str) + '%'
-            df_young['Return Sejak Rilis (Inception)'] = (df_young['Inception_Return'] * 100).round(2).astype(str) + '%'
+            # df_young['Return Sejak Rilis (Inception)'] = (df_young['Inception_Return'] * 100).round(2).astype(str) + '%'
             
             # Buang desimal pada kolom peringkat
             df_young['Peringkat_Performa'] = df_young['Peringkat_Performa'].fillna(0).astype(int)
             
+            # st.dataframe(
+            #     df_young[['Peringkat_Performa', 'Nama Instrumen', f'Return ({date_option})', 'Return Sejak Rilis (Inception)']], 
+            #     hide_index=True, 
+            #     use_container_width=True
+            # )
             st.dataframe(
-                df_young[['Peringkat_Performa', 'Nama Instrumen', f'Return ({date_option})', 'Return Sejak Rilis (Inception)']], 
+                df_young[['Peringkat_Performa', 'Nama Instrumen', f'Return ({date_option})']], 
                 hide_index=True, 
                 use_container_width=True
             )
@@ -1448,15 +1465,15 @@ with tab_leaderboard_split:
     st.info("ℹ️ **Metodologi:** Berfungsi sebagai indikator *Momentum*. Peringkat diukur murni berdasarkan **Return Absolut 5 Hari Kalender** ((Harga Hari Ini / Harga 5 Hari Lalu) - 1). Mengabaikan risiko dan volatilitas untuk mencari aset dengan tren naik jangka pendek tercepat.")
     lb_type = st.radio("Pilih Tipe Leaderboard", ["Equity", "Fixed Income"], horizontal=True, key="lb_split_type")
     if lb_type == "Equity":
-        df_lb = df_equity
+        df_lb_full = df_equity_full.drop(columns=[x for x in young_all if x in df_equity_full.columns], errors='ignore')
         title = "Equity"
     else:
-        df_lb = df_bond
+        df_lb_full = df_bond_full.drop(columns=[x for x in young_all if x in df_bond_full.columns], errors='ignore')
         title = "Fixed Income"
     
-    if not df_lb.empty:
+    if not df_lb_full.empty:
         # UBAH: Panggil dengan days=5
-        leaderboard = calculate_daily_leaderboard(df_equity_full if lb_type == "Equity" else df_bond_full, days=5)
+        leaderboard = calculate_daily_leaderboard(df_lb_full, days=5)
         if not leaderboard.empty:
             leaderboard['Change_Color'] = leaderboard['Rank_Change'].apply(
                 lambda x: '🚀 Top Climber' if x > 0 else ('📉 Top Laggard' if x < 0 else 'Stabil')
@@ -1504,7 +1521,7 @@ with tab_leaderboard_split:
             # ================= TAMBAHAN SEGMEN PERINGKAT HARIAN =================
             st.divider()
             
-            df_daily_full = df_equity_full if lb_type == "Equity" else df_bond_full
+            df_daily_full = df_daily_full = df_lb_full
             
             if not df_daily_full.empty and len(df_daily_full) >= 2:
                 df_daily_full = df_daily_full.ffill()
@@ -1692,7 +1709,7 @@ with tab_performance:
     - **Konsistensi Peringkat (12 Metrik):** Frekuensi dan *streak* produk bertahan di Top 5, 10, dan 20 pada berbagai rentang waktu.
     - **Akselerasi Tren / Climbers (4 Metrik):** Perubahan posisi peringkat harian saat ini dibandingkan posisi 1, 7, 14, dan 22 hari perdagangan sebelumnya.
     - **Skor Valuasi (1 Metrik):** Penilaian kewajaran harga berdasarkan deviasi Z-Score (dibagi ke dalam 8 fraksi pita/bands).
-    - **Total Skor:** Rata-rata persentil dari ke-24 metrik di atas (distribusi bobot setara 4% per komponen pada mode Balanced).""")
+    - **Total Skor:** Rata-rata persentil dari ke-25 metrik di atas (distribusi bobot setara 4% per komponen pada mode Balanced).""")
     
     perf_type = st.radio("Pilih Kategori Aset", ["Equity", "Fixed Income"], horizontal=True, key="perf_type_radio")
     
@@ -1714,13 +1731,16 @@ with tab_performance:
         # Gabungkan metrik dan seluruh kolom skor (_scaled) di awal agar mudah dipilah
         full_performance = metrics_perf.merge(ranked_perf, left_index=True, right_index=True, how='left')
         
+        # BUANG PRODUK MUDA DARI LEADERBOARD TAB 4
+        full_performance_clean = full_performance.drop(index=[x for x in young_all if x in full_performance.index], errors='ignore')
+        
         # --- 1. DUA LEADERBOARD TOP 5 (ATAS) ---
         st.subheader(f"🏆 Leaderboards: Top 5 {title}")
         col_top1, col_top2 = st.columns(2)
             
         with col_top1:
             st.markdown(f"**🌟 Top 5 Composite Score** (Benchmark: {selected_bench_label})")
-            top5_score = full_performance.sort_values('Total_Score', ascending=False).head(5)
+            top5_score = full_performance_clean.sort_values('Total_Score', ascending=False).head(5)
             df_show_score = top5_score[['Total_Score']].copy()
             df_show_score['Total_Score'] = df_show_score['Total_Score'].round(3)
             df_show_score = df_show_score.rename(columns={'Total_Score': 'Skor Komposit'})
@@ -1729,7 +1749,7 @@ with tab_performance:
  
         with col_top2:
             st.markdown(f"**🥇 Top 5 Performa (Return {date_option})**")
-            top5_return = full_performance.sort_values('Interval_Return', ascending=False).head(5)
+            top5_return = full_performance_clean.sort_values('Interval_Return', ascending=False).head(5)
             df_show_return = top5_return[['Interval_Return']].copy()
             df_show_return['Interval_Return'] = (df_show_return['Interval_Return'] * 100).round(2).astype(str) + '%'
             df_show_return = df_show_return.rename(columns={'Interval_Return': f'Return {date_option}'})
@@ -1824,7 +1844,8 @@ with tab_performance:
         full_performance_display.index.name = 'Nama Produk'
         
         # 1. Klasifikasi Kelompok Metrik
-        return_metrics = ['Inception_Return', 'Interval_Return', 'Return_1W', 'Return_1M', 'Return_3M']
+        # return_metrics = ['Inception_Return', 'Interval_Return', 'Return_1W', 'Return_1M', 'Return_3M']
+        return_metrics = ['Interval_Return', 'Return_1W', 'Return_1M', 'Return_3M']
         risk_metrics = ['Sharpe_Ratio', 'Alpha', 'Beta', 'Volatility']
         consist_metrics = [
             'Consist_1d_Top5', 'Consist_1d_Top10', 'Consist_1d_Top20',
@@ -1832,7 +1853,7 @@ with tab_performance:
             'Consist_14d_Top5', 'Consist_14d_Top10', 'Consist_14d_Top20',
             'Consist_21d_Top5', 'Consist_21d_Top10', 'Consist_21d_Top20'
         ]
-        climb_metrics = ['Climb_1d', 'Climb_7d', 'Climb_14d', 'climb_21d']
+        climb_metrics = ['Climb_1d', 'Climb_7d', 'Climb_14d', 'Climb_22d']
         val_metrics = ['Z_Score', 'Status_Valuasi', 'Skor_Valuasi']
         
         # 2. Filter Dinamis Sesuai Mode di Sidebar
@@ -1861,7 +1882,8 @@ with tab_performance:
         
         # 5. Eksekusi Formatting Tampilan
         cols_to_format = {
-            'Inception_Return': "{:.2%}", 'Interval_Return': "{:.2%}", 'Return_1W': "{:.2%}", 'Return_1M': "{:.2%}", 'Return_3M': "{:.2%}",
+            #'Inception_Return': "{:.2%}", 
+            'Interval_Return': "{:.2%}", 'Return_1W': "{:.2%}", 'Return_1M': "{:.2%}", 'Return_3M': "{:.2%}",
             'Volatility': "{:.4f}", 
             'Sharpe_Ratio': "{:.4f}", 
             'Beta': "{:.4f}", 
@@ -1973,9 +1995,9 @@ with tab_performance:
 
         with tab_heat2:
             st.markdown(f"**Heatmap Peringkat Performa (Kenaikan Harga Absolut)**")
-            
+            df_perf_full_clean = df_perf_full.drop(columns=[x for x in young_all if x in df_perf_full.columns], errors='ignore')
             period_ranks_df = get_period_performance_ranking(
-                df_perf_full, 
+                df_perf_full_clean, 
                 trading_days_interval=trading_interval, 
                 num_periods=num_columns
             )
@@ -1994,7 +2016,7 @@ with tab_performance:
 
         with tab_heat3:
             st.markdown(f"**Heatmap Persentase Perubahan Bulanan ({num_columns} Bulan Terakhir)**")
-            monthly_pct_df = get_monthly_pct_change(df_perf_full)
+            monthly_pct_df = get_monthly_pct_change(df_perf_full_clean)
             if not monthly_pct_df.empty:
                 # Potong kolom tepat sebanyak jumlah periode yang diminta
                 monthly_pct_df = monthly_pct_df.iloc[:, -num_columns:]
