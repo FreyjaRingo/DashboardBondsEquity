@@ -1452,7 +1452,7 @@ with tab_overview:
                 use_container_width=True
             )
             st.divider()
-    st.subheader(f"📈 Tren Pasar: {selected_benchmark_label}")
+    st.subheader(f"📈 Tren Pasar: {selected_bench_label}")
     if not benchmark_series_sliced.empty:
         # Kalkulasi persentase perubahan dari awal periode untuk keterangan tambahan
         bench_start_val = benchmark_series_sliced.iloc[0]
