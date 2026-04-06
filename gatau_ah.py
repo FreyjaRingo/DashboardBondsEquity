@@ -121,6 +121,7 @@ def fetch_from_supabase(table_name, id_col, tickers, start_date, end_date):
     df = pd.DataFrame(all_data)
     df['Date'] = pd.to_datetime(df['date']) 
     return df
+
 # ==================== FUNGSI INISIALISASI SESI REFINITIV ====================
 def init_refinitiv_session():
     """Hanya membuka sesi Refinitiv tanpa menarik data RFR awal."""
@@ -2165,7 +2166,7 @@ with tab_compare:
         else:
             dynamic_window = target_window
 
-        st.subheader(f"📈 Pita Volatilitas Harga Mentah / NAV (Rolling {dynamic_window} Hari)")
+        st.subheader(f"📈 Volatility Bands NAV (Rolling {date_option})")
         
         # --- TOGGLE TEMA GRAFIK ---
         chart_theme = st.radio("Pilih Tema Visual Grafik:", ["Dark Theme", "Light Theme"], horizontal=True, key="band_theme_radio")
@@ -2241,7 +2242,7 @@ with tab_compare:
         st.divider()
                 
         # --- 3. Pergerakan Metrik Harian ---
-        st.subheader(f"📊 Grafik Pergerakan Metrik Harian (Rolling {dynamic_window} Hari)")
+        st.subheader(f"📊 Grafik Pergerakan Metrik Harian (Rolling {date_option})")
         
         # Kalkulasi metrik rolling menggunakan dynamic_window yang sama
         df_selected_full = df_all_instruments_full[selected_instruments]
