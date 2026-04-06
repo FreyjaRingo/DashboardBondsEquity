@@ -2068,7 +2068,7 @@ with tab_compare:
     st.header("📉 Perbandingan Historis & Analisis Volatilitas")
     st.info(f"""ℹ️ **Panduan Analisis Grafik ({date_option} | {start_date_str} s/d {end_date_str}):**
     - **Kinerja Absolut & Relatif:** Melacak tren Harga (NAV) aktual, akumulasi keuntungan (Return Kumulatif), dan risiko penurunan terdalam dari titik puncak (Drawdown).
-    - **Pita Volatilitas (Standard Deviation Bands):** Memvisualisasikan area kewajaran harga. Harga yang menyentuh pita atas (+2 atau +3 SD) mengindikasikan area jenuh beli (*Overbought*/Mahal), sedangkan sentuhan di pita bawah (-2 atau -3 SD) menunjukkan jenuh jual (*Oversold*/Murah).
+    - **Volatility Bands (Standard Deviation Bands):** Memvisualisasikan area kewajaran harga. Harga yang menyentuh pita atas (+2 atau +3 SD) mengindikasikan area jenuh beli (*Overbought*/Mahal), sedangkan sentuhan di pita bawah (-2 atau -3 SD) menunjukkan jenuh jual (*Oversold*/Murah).
     - **Pergerakan Metrik Harian (Rolling):** Memantau tren perubahan metrik **Alpha, Beta (terhadap {selected_benchmark_label}), Sharpe Ratio, dan Volatilitas** secara dinamis dari hari ke hari, berguna untuk melihat apakah kinerja manajer investasi konsisten atau hanya kebetulan di satu waktu.""")
     
     available_instruments = df_all_instruments.columns.tolist()
@@ -2175,7 +2175,7 @@ with tab_compare:
             # Gunakan ffill().bfill() agar indeks waktu tidak terputus
             inst_nav_full = df_all_instruments_full[inst].ffill().bfill()
             
-            # Kalkulasi Pita Volatilitas (Bands) menggunakan window yang sama dengan sidebar
+            # Kalkulasi Volatility Bands (Bands) menggunakan window yang sama dengan sidebar
             roll_mean_full = inst_nav_full.rolling(window=dynamic_window).mean()
             roll_std_full = inst_nav_full.rolling(window=dynamic_window).std()
             
@@ -2228,7 +2228,7 @@ with tab_compare:
             fig_band.add_trace(go.Scatter(x=lower_3sd.index, y=lower_3sd, mode='lines', name='-3 SD', line=dict(color=sd3_color, width=1, dash='dash')))
             
             fig_band.update_layout(
-                title=f"Distribusi Harga & Pita Volatilitas: {inst}", 
+                title=f"Distribusi Harga & Volatility Bands: {inst}", 
                 xaxis_title="Tanggal", 
                 yaxis_title="NAV / Harga", 
                 legend=legend_layout, 
