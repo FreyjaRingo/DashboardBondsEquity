@@ -1013,35 +1013,35 @@ with st.sidebar:
                                 else: st.error(f"❌ Gagal total: {e}")
                 else: st.warning("Isi Ticker dan Nama!")
 
-    # # 2. FORM OBLIGASI NEGARA
-    # with tab_bond:
-    #     with st.form("form_add_bond"):
-    #         bond_isin = st.text_input("ISIN Code / Ticker", placeholder="Contoh: IDFR0100=")
-    #         bond_name = st.text_input("Nama Obligasi", placeholder="Contoh: FR100")
-    #         bond_curr = st.selectbox("Mata Uang", ["IDR", "USD"], key="bd_c")
-    #         bond_release_date = st.date_input("Tanggal Rilis Obligasi", value=dt.date(2024, 1, 1))
+    # 2. FORM OBLIGASI NEGARA
+    with tab_bond:
+        with st.form("form_add_bond"):
+            bond_isin = st.text_input("ISIN Code / Ticker", placeholder="Contoh: IDFR0100=")
+            bond_name = st.text_input("Nama Obligasi", placeholder="Contoh: FR100")
+            bond_curr = st.selectbox("Mata Uang", ["IDR", "USD"], key="bd_c")
+            bond_release_date = st.date_input("Tanggal Rilis Obligasi", value=dt.date(2024, 1, 1))
             
-    #         if st.form_submit_button("Tambah & Tarik Data"):
-    #             if bond_isin and bond_name:
-    #                 with st.spinner("Menarik Historis Obligasi..."):
-    #                     if not st.session_state.connected:
-    #                         st.session_state.connected = init_refinitiv_session()
+            if st.form_submit_button("Tambah & Tarik Data"):
+                if bond_isin and bond_name:
+                    with st.spinner("Menarik Historis Obligasi..."):
+                        if not st.session_state.connected:
+                            st.session_state.connected = init_refinitiv_session()
                             
-    #                     if st.session_state.connected:
-    #                         supabase.table("gov_bonds_instruments").upsert([{"isin_code": bond_isin, "name": bond_name, "currency": bond_curr}]).execute()
+                        if st.session_state.connected:
+                            supabase.table("gov_bonds_instruments").upsert([{"isin_code": bond_isin, "name": bond_name, "currency": bond_curr}]).execute()
                             
-    #                         # Inject Start Date dinamis
-    #                         success = backfill_new_instrument("gov_bonds_prices_daily", "isin_code", bond_isin, ['TR.ASKPRICE.date', 'TR.ASKPRICE', 'TR.BIDYIELD'], ["ask_price", "ask_yield"], {'Instrument': 'isin_code', 'Date': 'date', 'Ask Price': 'ask_price', 'Bid Yield': 'ask_yield', 'TR.ASKPRICE.date': 'date', 'TR.ASKPRICE': 'ask_price', 'TR.BIDYIELD': 'ask_yield'}, start_date_str=bond_release_date.strftime('%Y-%m-%d'))
+                            # Inject Start Date dinamis
+                            success = backfill_new_instrument("gov_bonds_prices_daily", "isin_code", bond_isin, ['TR.ASKPRICE.date', 'TR.ASKPRICE', 'TR.BIDYIELD'], ["ask_price", "ask_yield"], {'Instrument': 'isin_code', 'Date': 'date', 'Ask Price': 'ask_price', 'Bid Yield': 'ask_yield', 'TR.ASKPRICE.date': 'date', 'TR.ASKPRICE': 'ask_price', 'TR.BIDYIELD': 'ask_yield'}, start_date_str=bond_release_date.strftime('%Y-%m-%d'))
                             
-    #                         load_master_instruments.clear()
-    #                         load_all_data.clear()
+                            load_master_instruments.clear()
+                            load_all_data.clear()
                             
-    #                         if success: st.success("✅ Obligasi ditambahkan!")
-    #                         else: st.warning("⚠️ Obligasi ditambahkan, historis kosong.")
-    #                         time.sleep(1)
-    #                         st.rerun()
-    #                     else: st.error("❌ Gagal terhubung ke API Refinitiv.")
-    #             else: st.warning("Isi ISIN dan Nama!")
+                            if success: st.success("✅ Obligasi ditambahkan!")
+                            else: st.warning("⚠️ Obligasi ditambahkan, historis kosong.")
+                            time.sleep(1)
+                            st.rerun()
+                        else: st.error("❌ Gagal terhubung ke API Refinitiv.")
+                else: st.warning("Isi ISIN dan Nama!")
 
     # 3. FORM MAKRO
     with tab_macro:
