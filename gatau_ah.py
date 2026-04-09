@@ -965,6 +965,7 @@ with st.sidebar:
     # ==========================================
     st.subheader("⚙️ Database Instrumen (CRUD)")
     
+    tab_mf, tab_bond, tab_macro, tab_del = st.tabs(["Reksa Dana", "Obligasi", "Makro", "Hapus"])
     # 1. FORM REKSA DANA
     with tab_mf:
         with st.form("form_add_mf"):
