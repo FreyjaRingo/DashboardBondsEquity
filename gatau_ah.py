@@ -386,7 +386,7 @@ def load_all_data(start_date, end_date, currency='IDR'):
 @st.cache_data(max_entries=50, show_spinner=False)
 def calculate_metrics(price_data, benchmark_series, risk_free_rate, eval_window=None, young_funds_list=None, bench_ticker=""):
     price_data = price_data.dropna(axis=1, how='all')
-    price_data = price_data.ffill().bfill()
+    price_data = price_data.ffill()
     
     returns_full = price_data.pct_change().dropna(how='all')
     if returns_full.empty: return None
@@ -1200,47 +1200,12 @@ latest_dates = [df.index.max() for df in list_of_dfs if not df.empty and df.inde
 
 if latest_dates:
     latest_update = max(latest_dates)
-    st.caption(f"🔄 **Data Last Updated At:** {latest_update.strftime('%d %b %Y')}")
+    st.caption(f"🔄 **Latest Updated Data:** {latest_update.strftime('%d %b %Y')}")
 
 # --- DETEKSI REKSA DANA MUDA (< 1 TAHUN / < 252 Hari Bursa) ---
 # --- DETEKSI REKSA DANA MUDA (< 1 TAHUN KALENDER DARI DATABASE) ---
 # --- DETEKSI REKSA DANA MUDA (< 1 TAHUN KALENDER DARI DATABASE) ---
-def get_young_funds(df):
-    young = []
-    today = pd.Timestamp(dt.datetime.today().date())
-    
-    for col in df.columns:
-        # 1. Hapus nilai 0.0 (API sering mengisi masa lalu dengan 0)
-        s = df[col].replace(0.0, np.nan).dropna()
-        if s.empty: continue
-        
-        # 2. Deteksi 'Padding' Harga (Harga flat masa lalu dari API)
-        # Cari kapan harga mulai aktif bergerak / berfluktuasi
-        pct = s.pct_change()
-        active_moves = pct[pct != 0.0].dropna()
-        
-        if not active_moves.empty:
-            # Rilis asli adalah 1 hari sebelum harga pertama kali bergerak
-            first_move_date = active_moves.index[0]
-            first_move_idx = s.index.get_loc(first_move_date)
-            
-            if first_move_idx > 0:
-                real_inception_date = s.index[first_move_idx - 1]
-            else:
-                real_inception_date = s.index[0]
-        else:
-            # Jika produk tidak pernah bergerak sama sekali
-            real_inception_date = s.index[0]
-            
-        # 3. Hitung umur kalender murni
-        if (today - real_inception_date).days <= 365:
-            young.append(col)
-             
-    return young
 
-young_equities = get_young_funds(df_equity_full)
-young_bonds = get_young_funds(df_bond_full)
-young_all = tuple(young_equities + young_bonds)
 
 # ==================== EKSTRAK BENCHMARK SERIES ====================
 def get_benchmark_series(ticker, dfs_dict):
@@ -1315,8 +1280,32 @@ elif date_option == "6 Bulan":
     cutoff_days = 126
 elif date_option == "1 Tahun":
     cutoff_days = 252
+# elif date_option == "3 Tahun":
+#     cutoff_days = 252 * 3
+# elif date_option == "5 Tahun":
+#     cutoff_days = 252 * 5
 else:
     cutoff_days = 252
+
+def get_young_funds_dynamic(df):
+    young = []
+    # Patokan umur menggunakan total hari pada rentang analisis (cut-off)
+    expected_days = len(df)
+    
+    # Pencegahan error jika rentang analisis yang dipilih terlalu pendek
+    if expected_days < 10:
+        return young
+
+    for col in df.columns:
+        s = df[col].replace(0.0, np.nan).dropna()
+        # Jika jumlah hari produk kurang dari 90% total kalender analisis, karantina
+        if len(s) < (expected_days * 0.9):
+            young.append(col)
+    return young
+
+young_equities = get_young_funds_dynamic(df_equity)
+young_bonds = get_young_funds_dynamic(df_bond)
+young_all = tuple(young_equities + young_bonds)
 
 # MENGIRIM VARIABEL young_all ke fungsi kalkulasi
 metrics_all = calculate_metrics(df_all_instruments, benchmark_series_sliced, risk_free_rate, eval_window=cutoff_days, young_funds_list=young_all, bench_ticker=selected_benchmark_ticker)
@@ -1359,14 +1348,14 @@ ranked_products_bond = calculate_ranking_scores(metrics_bond, weights=weights_di
 leaderboard_daily = calculate_daily_leaderboard(df_all_instruments, days=7)
 
 # ==================== TABS ====================
-tab_overview, tab_leaderboard_split,  tab_performance, tab_correlation, tab_compare  = st.tabs([
+tab_overview, tab_leaderboard_split,  tab_performance, tab_correlation, tab_compare, tab_gov_bonds, tab_recommendation  = st.tabs([
     "📋 Ringkasan", 
     "🏆 Leaderboard", 
     "📊 Performa & Ranking", 
     "📈 Korelasi",  
     "📉 Perbandingan Historis",
-    # tab_rekomendasi refinitinv
-    #"🏛️ Obligasi Negara" tab_gov_bonds
+    "🏛️ Obligasi Negara",
+    "💡 Rekomendasi"
 ])
 
 # --- Tab 1: Ringkasan ---
@@ -1422,7 +1411,7 @@ with tab_overview:
 
     if young_list_to_show and metrics_to_show is not None:
         st.divider()
-        st.warning(f"⚠️ Terdapat **{len(young_list_to_show)} {top10_category}** yang baru diluncurkan (Umur < 1 Tahun).")
+        st.warning(f"⚠️ Terdapat **{len(young_list_to_show)} {top10_category}** yang umur nya tidak selama interval data.")
         st.caption(f"Instrumen ini dianulir dari evaluasi Skor Komposit Risiko, namun diperingkat secara independen di bawah ini murni berdasarkan kinerja profit absolut pada interval analisis **{date_option}**.")
         
         # Ekstrak metrik khusus untuk produk muda
@@ -1452,7 +1441,7 @@ with tab_overview:
                 use_container_width=True
             )
             st.divider()
-    st.subheader(f"📈 Tren Pasar: {selected_bench_label}")
+    st.subheader(f"📈 Tren Pasar: {selected_benchmark_label}")
     if not benchmark_series_sliced.empty:
         # Kalkulasi persentase perubahan dari awal periode untuk keterangan tambahan
         bench_start_val = benchmark_series_sliced.iloc[0]
@@ -2082,7 +2071,7 @@ with tab_compare:
     # Syarat diubah menjadi minimal 1 instrumen agar analisis volatilitas tunggal dapat dilakukan
     if len(selected_instruments) >= 1:
         df_compare = df_all_instruments[selected_instruments].copy()
-        df_compare = df_compare.ffill().bfill()
+        df_compare = df_compare.ffill()
         
         legend_layout = dict(orientation="h", yanchor="top", y=-0.2, xanchor="center", x=0.5, title=None)
         
@@ -2094,9 +2083,15 @@ with tab_compare:
         st.plotly_chart(fig_prices, use_container_width=True)
         
         # Kalkulasi Return Kumulatif
-        # Kalkulasi Return Kumulatif
-        returns_cum = (df_compare.pct_change().fillna(0) + 1).cumprod() - 1
-        df_returns_pct = returns_cum * 100
+        df_returns_pct = pd.DataFrame(index=df_compare.index)
+
+        for col in df_compare.columns:
+            # Cari tanggal pertama di mana produk ini punya harga
+            first_valid_idx = df_compare[col].first_valid_index()
+            if first_valid_idx is not None:
+                base_price = df_compare.loc[first_valid_idx, col]
+                # Hitung persentase kenaikan dari titik rilis tersebut
+                df_returns_pct[col] = ((df_compare[col] / base_price) - 1) * 100
         
         fig_returns = px.line(df_returns_pct, x=df_returns_pct.index, y=df_returns_pct.columns, title="Return Kumulatif (%)")
         fig_returns.add_hline(y=0, line_dash="dash", line_color="gray", opacity=0.5)
@@ -2281,152 +2276,224 @@ with tab_compare:
     else:
         st.info("Silakan pilih instrumen dari dropdown di atas untuk memulai analisis.")
        
-# ==================== TAB 6: GRAFIK OBLIGASI NEGARA ====================
-# with tab_gov_bonds:
-#     st.header("🏛️ Grafik Obligasi Negara (SBN/SUN/Sukuk)")
+#==================== TAB 6: GRAFIK OBLIGASI NEGARA ====================
+with tab_gov_bonds:
+    st.header("🏛️ Grafik Obligasi Negara (SBN/SUN/Sukuk)")
     
-#     # Gunakan data utuh (_full) agar rentang waktu bisa ditarik independen dari sidebar
-#     if not df_gov_bonds_price_full.empty:
-#         available_gov_bonds = df_gov_bonds_price_full.columns.tolist()
+    # Gunakan data utuh (_full) agar rentang waktu bisa ditarik independen dari sidebar
+    if not df_gov_bonds_price_full.empty:
+        available_gov_bonds = df_gov_bonds_price_full.columns.tolist()
         
-#         selected_gov_bonds = st.multiselect(
-#             "Pilih Seri Obligasi untuk Ditampilkan:",
-#             options=available_gov_bonds,
-#             default=available_gov_bonds[:min(3, len(available_gov_bonds))] if available_gov_bonds else [],
-#             key="gov_bonds_multiselect"
-#         )
+        selected_gov_bonds = st.multiselect(
+            "Pilih Seri Obligasi untuk Ditampilkan:",
+            options=available_gov_bonds,
+            default=available_gov_bonds[:min(3, len(available_gov_bonds))] if available_gov_bonds else [],
+            key="gov_bonds_multiselect"
+        )
         
-#         if selected_gov_bonds:
-#             st.divider()
+        if selected_gov_bonds:
+            st.divider()
+            # --- PANEL KONTROL CUT-OFF TANGGAL OBLIGASI ---
+            st.subheader("✂️ Cut-off Data Analisis Obligasi")
+            col_date1, col_date2 = st.columns(2)
             
-#             # --- PANEL KONTROL WAKTU ---
-#             st.subheader("⏱️ Kontrol Rentang & Jarak Waktu")
-#             col_t1, col_t2 = st.columns(2)
-#             with col_t1:
-#                 interval_mapping = {
-#                     "Harian (1D)": "1D", "5 Hari (5D)": "5D", "10 Hari (10D)": "10D",
-#                     "1 Bulan (1M)": "1M", "3 Bulan (3M)": "3M", "6 Bulan (6M)": "6M",
-#                     "1 Tahun (1Y)": "1Y", "3 Tahun (3Y)": "3Y", "5 Tahun (5Y)": "5Y",
-#                     "10 Tahun (10Y)": "10Y"
-#                 }
-#                 selected_label_gran = st.selectbox("Interval Grafik Mentah (Granularitas):", list(interval_mapping.keys()), index=0, key="bond_granularity")
-#                 gran_code = interval_mapping[selected_label_gran]
+            # Ambil batas data paling awal dan akhir yang tersedia di master data
+            min_date_gov = df_gov_bonds_price_full.index.min().date()
+            max_date_gov = df_gov_bonds_price_full.index.max().date()
+            
+            # Default mundur 3 tahun untuk obligasi (opsional, bisa disesuaikan)
+            default_start_gov = max(min_date_gov, max_date_gov - dt.timedelta(days=365*3))
+            
+            with col_date1:
+                start_date_gov = st.date_input("Start Date Obligasi", value=default_start_gov, min_value=min_date_gov, max_value=max_date_gov, key="gov_start_date")
+            with col_date2:
+                end_date_gov = st.date_input("End Date Obligasi", value=max_date_gov, min_value=min_date_gov, max_value=max_date_gov, key="gov_end_date")
                 
-#             with col_t2:
-#                 yield_options = {"YTD": "YTD", "1 Bulan": "1M", "3 Bulan": "3M", "6 Bulan": "6M", "1 Tahun": "1Y", "2 Tahun": "2Y", "3 Tahun": "3Y", "5 Tahun": "5Y"}
-#                 selected_label_rebase = st.selectbox("Rentang Waktu Grafik Persentase (Rebasing):", list(yield_options.keys()), index=4, key="bond_rebase")
-#                 rebase_code = yield_options[selected_label_rebase]
-
-#             # --- FUNGSI PEMBANTU (HELPER FUNCTIONS) ---
-#             def apply_granularity(df, code):
-#                 if df.empty or code == "1D": return df
-#                 if code == "5D": return df.iloc[::-5][::-1]
-#                 if code == "10D": return df.iloc[::-10][::-1]
+            # Konversi ke datetime pandas untuk slicing
+            start_gov_dt = pd.to_datetime(start_date_gov)
+            end_gov_dt = pd.to_datetime(end_date_gov)
+            
+            st.divider()
+            # --- PANEL KONTROL WAKTU ---
+            st.subheader("⏱️ Kontrol Rentang & Jarak Waktu")
+            col_t1, col_t2 = st.columns(2)
+            with col_t1:
+                interval_mapping = {
+                    "Harian (1D)": "1D", "5 Hari (5D)": "5D", "10 Hari (10D)": "10D",
+                    "1 Bulan (1M)": "1M", "3 Bulan (3M)": "3M", "6 Bulan (6M)": "6M",
+                    "1 Tahun (1Y)": "1Y", "3 Tahun (3Y)": "3Y", "5 Tahun (5Y)": "5Y",
+                    "10 Tahun (10Y)": "10Y"
+                }
+                selected_label_gran = st.selectbox("Interval Grafik Mentah :", list(interval_mapping.keys()), index=0, key="bond_granularity")
+                gran_code = interval_mapping[selected_label_gran]
                 
-#                 resample_new = {"1M": "ME", "3M": "3ME", "6M": "6ME", "1Y": "YE", "3Y": "3YE", "5Y": "5YE", "10Y": "10YE"}
-#                 resample_old = {"1M": "M", "3M": "3M", "6M": "6M", "1Y": "Y", "3Y": "3Y", "5Y": "5Y", "10Y": "10Y"}
-#                 try: return df.resample(resample_new[code]).last().dropna(how='all')
-#                 except: return df.resample(resample_old[code]).last().dropna(how='all')
+            with col_t2:
+                yield_options = {"YTD": "YTD", "1 Bulan": "1M", "3 Bulan": "3M", "6 Bulan": "6M", "1 Tahun": "1Y", "2 Tahun": "2Y", "3 Tahun": "3Y", "5 Tahun": "5Y"}
+                selected_label_rebase = st.selectbox("Rentang Waktu Grafik Persentase (Rebasing):", list(yield_options.keys()), index=4, key="bond_rebase")
+                rebase_code = yield_options[selected_label_rebase]
 
-#             def apply_rebasing(df, y_code):
-#                 if df.empty: return pd.DataFrame()
-#                 latest_date = df.index.max()
-#                 if y_code == "YTD": start_date = pd.Timestamp(latest_date.year, 1, 1)
-#                 elif "M" in y_code: start_date = latest_date - pd.DateOffset(months=int(y_code.replace("M", "")))
-#                 elif "Y" in y_code: start_date = latest_date - pd.DateOffset(years=int(y_code.replace("Y", "")))
-#                 else: start_date = df.index.min()
-
-#                 df_sliced = df.loc[start_date:latest_date].copy()
-#                 if not df_sliced.empty and len(df_sliced) > 1:
-#                     df_rebased = (df_sliced / df_sliced.iloc[0]) - 1
-#                     return df_rebased * 100
-#                 return pd.DataFrame()
-
-#             def add_end_annotations(fig, df_plot):
-#                 if df_plot.empty: return fig
-#                 line_colors = {trace.name: trace.line.color for trace in fig.data}
-#                 last_date = df_plot.index[-1]
-#                 for col in df_plot.columns:
-#                     last_val = df_plot[col].dropna().iloc[-1] if not df_plot[col].dropna().empty else None
-#                     if last_val is not None:
-#                         bg_color = line_colors.get(col, "gray")
-#                         fig.add_annotation(
-#                             x=last_date, y=last_val, text=f"<b>{last_val:.2f}%</b>",
-#                             showarrow=False, xanchor="left", xshift=8, 
-#                             font=dict(size=11, color="white"), bgcolor=bg_color, borderpad=3, opacity=0.9
-#                         )
-#                 fig.update_layout(margin=dict(r=70))
-#                 return fig
-
-#             legend_layout_gov = dict(orientation="h", yanchor="top", y=-0.2, xanchor="center", x=0.5, title=None)
-
-#             # Tarik data utuh untuk instrumen terpilih dan tambal data bolong
-#             df_price_raw = df_gov_bonds_price_full[selected_gov_bonds].ffill().bfill()
-#             df_yield_raw = df_gov_bonds_yield_full[selected_gov_bonds].ffill().bfill() if not df_gov_bonds_yield_full.empty else pd.DataFrame()
-
-#             # ==========================================
-#             # SEGMEN 1: ASK PRICE (HARGA PENAWARAN)
-#             # ==========================================
-#             st.divider()
-#             st.subheader("📊 Analisis Harga Obligasi (Ask Price)")
-            
-#             tab_p1, tab_p2 = st.tabs(["1. Harga Mentah (Granularitas)", "2. Persentase Kenaikan (Rebasing)"])
-            
-#             with tab_p1:
-#                 df_p_gran = apply_granularity(df_price_raw, gran_code)
-#                 fig_p1 = px.line(df_p_gran, x=df_p_gran.index, y=df_p_gran.columns, title=f"Harga Aktual - Interval {selected_label_gran}")
-#                 if gran_code != "1D": fig_p1.update_traces(mode='lines+markers')
-#                 fig_p1.update_layout(xaxis_title="Tanggal", yaxis_title="Ask Price", legend=legend_layout_gov, hovermode="x unified")
-#                 st.plotly_chart(fig_p1, use_container_width=True)
-
-#             with tab_p2:
-#                 df_p_rebase = apply_rebasing(df_price_raw, rebase_code)
-#                 if not df_p_rebase.empty:
-#                     fig_p2 = px.line(df_p_rebase, x=df_p_rebase.index, y=df_p_rebase.columns, title=f"Persentase Kenaikan Harga ({selected_label_rebase})")
-#                     fig_p2.add_hline(y=0, line_dash="dash", line_color="gray", opacity=0.5)
-#                     fig_p2.update_yaxes(ticksuffix="%")
-#                     fig_p2 = add_end_annotations(fig_p2, df_p_rebase)
-#                     fig_p2.update_layout(xaxis_title="Tanggal", yaxis_title="Perubahan Harga (%)", legend=legend_layout_gov, hovermode="x unified")
-#                     st.plotly_chart(fig_p2, use_container_width=True)
-#                 else:
-#                     st.warning("Data tidak mencukupi untuk Rebasing.")
-
-#             # ==========================================
-#             # SEGMEN 2: ASK YIELD (IMBAL HASIL)
-#             # ==========================================
-#             st.divider()
-#             st.subheader("📉 Analisis Imbal Hasil (Ask Yield)")
-            
-#             if not df_yield_raw.empty:
-#                 tab_y1, tab_y2 = st.tabs(["1. Yield Mentah (Granularitas)", "2. Persentase Perubahan (Rebasing)"])
+            # --- FUNGSI PEMBANTU (HELPER FUNCTIONS) ---
+            def apply_granularity(df, code):
+                if df.empty or code == "1D": return df
+                if code == "5D": return df.iloc[::-5][::-1]
+                if code == "10D": return df.iloc[::-10][::-1]
                 
-#                 with tab_y1:
-#                     df_y_gran = apply_granularity(df_yield_raw, gran_code)
-#                     fig_y1 = px.line(df_y_gran, x=df_y_gran.index, y=df_y_gran.columns, title=f"Yield Aktual (%) - Interval {selected_label_gran}")
-#                     if gran_code != "1D": fig_y1.update_traces(mode='lines+markers')
-#                     fig_y1.update_layout(xaxis_title="Tanggal", yaxis_title="Ask Yield (%)", legend=legend_layout_gov, hovermode="x unified")
-#                     st.plotly_chart(fig_y1, use_container_width=True)
+                resample_new = {"1M": "ME", "3M": "3ME", "6M": "6ME", "1Y": "YE", "3Y": "3YE", "5Y": "5YE", "10Y": "10YE"}
+                resample_old = {"1M": "M", "3M": "3M", "6M": "6M", "1Y": "Y", "3Y": "3Y", "5Y": "5Y", "10Y": "10Y"}
+                try: return df.resample(resample_new[code]).last().dropna(how='all')
+                except: return df.resample(resample_old[code]).last().dropna(how='all')
 
-#                 with tab_y2:
-#                     df_y_rebase = apply_rebasing(df_yield_raw, rebase_code)
-#                     if not df_y_rebase.empty:
-#                         fig_y2 = px.line(df_y_rebase, x=df_y_rebase.index, y=df_y_rebase.columns, title=f"Persentase Perubahan Yield ({selected_label_rebase})")
-#                         fig_y2.add_hline(y=0, line_dash="dash", line_color="gray", opacity=0.5)
-#                         fig_y2.update_yaxes(ticksuffix="%")
-#                         fig_y2 = add_end_annotations(fig_y2, df_y_rebase)
-#                         fig_y2.update_layout(xaxis_title="Tanggal", yaxis_title="Perubahan Yield (%)", legend=legend_layout_gov, hovermode="x unified")
-#                         st.plotly_chart(fig_y2, use_container_width=True)
-#                     else:
-#                         st.warning("Data Yield tidak mencukupi untuk Rebasing.")
+            def apply_rebasing(df, y_code):
+                if df.empty: return pd.DataFrame()
+                latest_date = df.index.max()
+                if y_code == "YTD": start_date = pd.Timestamp(latest_date.year, 1, 1)
+                elif "M" in y_code: start_date = latest_date - pd.DateOffset(months=int(y_code.replace("M", "")))
+                elif "Y" in y_code: start_date = latest_date - pd.DateOffset(years=int(y_code.replace("Y", "")))
+                else: start_date = df.index.min()
+
+                df_sliced = df.loc[start_date:latest_date].copy()
+                df_rebased = pd.DataFrame(index=df_sliced.index)
+                
+                if not df_sliced.empty and len(df_sliced) > 1:
+                    for col in df_sliced.columns:
+                        # Cari tanggal pertama obligasi ini memiliki data (bukan NaN)
+                        first_valid_idx = df_sliced[col].first_valid_index()
+                        if first_valid_idx is not None:
+                            base_val = df_sliced.loc[first_valid_idx, col]
+                            # Hitung persentase dari harga rilis tersebut
+                            df_rebased[col] = ((df_sliced[col] / base_val) - 1) * 100
+                    return df_rebased
+                return pd.DataFrame()
+
+            def add_end_annotations(fig, df_plot):
+                if df_plot.empty: return fig
+                line_colors = {trace.name: trace.line.color for trace in fig.data}
+                last_date = df_plot.index[-1]
+                for col in df_plot.columns:
+                    last_val = df_plot[col].dropna().iloc[-1] if not df_plot[col].dropna().empty else None
+                    if last_val is not None:
+                        bg_color = line_colors.get(col, "gray")
+                        fig.add_annotation(
+                            x=last_date, y=last_val, text=f"<b>{last_val:.2f}%</b>",
+                            showarrow=False, xanchor="left", xshift=8, 
+                            font=dict(size=11, color="white"), bgcolor=bg_color, borderpad=3, opacity=0.9
+                        )
+                fig.update_layout(margin=dict(r=70))
+                return fig
+
+            legend_layout_gov = dict(orientation="h", yanchor="top", y=-0.2, xanchor="center", x=0.5, title=None)
+
+            # 1. Tarik data tanpa memaksakan backward fill (bfill)
+            df_price_raw = df_gov_bonds_price_full[selected_gov_bonds].ffill()
+            df_yield_raw = df_gov_bonds_yield_full[selected_gov_bonds].ffill() if not df_gov_bonds_yield_full.empty else pd.DataFrame()
+
+            # 2. Potong rentang waktu sesuai input Cut-off Obligasi yang baru
+            df_price_raw = df_price_raw[(df_price_raw.index >= start_gov_dt) & (df_price_raw.index <= end_gov_dt)]
+            if not df_yield_raw.empty:
+                df_yield_raw = df_yield_raw[(df_yield_raw.index >= start_gov_dt) & (df_yield_raw.index <= end_gov_dt)]
+            # ==========================================
+            # SEGMEN 1: ASK PRICE (HARGA PENAWARAN)
+            # ==========================================
+            st.divider()
+            st.subheader("📊 Analisis Harga Obligasi (Ask Price)")
+            
+            tab_p1, tab_p2 = st.tabs(["1. Harga Mentah (Granularitas)", "2. Persentase Kenaikan (Rebasing)"])
+            
+            with tab_p1:
+                df_p_gran = apply_granularity(df_price_raw, gran_code)
+                fig_p1 = px.line(df_p_gran, x=df_p_gran.index, y=df_p_gran.columns, title=f"Harga Aktual - Interval {selected_label_gran}")
+                if gran_code != "1D": fig_p1.update_traces(mode='lines+markers')
+                fig_p1.update_layout(xaxis_title="Tanggal", yaxis_title="Ask Price", legend=legend_layout_gov, hovermode="x unified")
+                st.plotly_chart(fig_p1, use_container_width=True)
+
+            with tab_p2:
+                df_p_rebase = apply_rebasing(df_price_raw, rebase_code)
+                if not df_p_rebase.empty:
+                    fig_p2 = px.line(df_p_rebase, x=df_p_rebase.index, y=df_p_rebase.columns, title=f"Persentase Kenaikan Harga ({selected_label_rebase})")
+                    fig_p2.add_hline(y=0, line_dash="dash", line_color="gray", opacity=0.5)
+                    fig_p2.update_yaxes(ticksuffix="%")
+                    fig_p2 = add_end_annotations(fig_p2, df_p_rebase)
+                    fig_p2.update_layout(xaxis_title="Tanggal", yaxis_title="Perubahan Harga (%)", legend=legend_layout_gov, hovermode="x unified")
+                    st.plotly_chart(fig_p2, use_container_width=True)
+                else:
+                    st.warning("Data tidak mencukupi untuk Rebasing.")
+
+            # ==========================================
+            # SEGMEN 2: ASK YIELD (IMBAL HASIL)
+            # ==========================================
+            st.divider()
+            st.subheader("📉 Analisis Imbal Hasil (Ask Yield)")
+            
+            if not df_yield_raw.empty:
+                tab_y1, tab_y2 = st.tabs(["1. Yield Mentah (Granularitas)", "2. Persentase Perubahan (Rebasing)"])
+                
+                with tab_y1:
+                    df_y_gran = apply_granularity(df_yield_raw, gran_code)
+                    fig_y1 = px.line(df_y_gran, x=df_y_gran.index, y=df_y_gran.columns, title=f"Yield Aktual (%) - Interval {selected_label_gran}")
+                    if gran_code != "1D": fig_y1.update_traces(mode='lines+markers')
+                    fig_y1.update_layout(xaxis_title="Tanggal", yaxis_title="Ask Yield (%)", legend=legend_layout_gov, hovermode="x unified")
+                    st.plotly_chart(fig_y1, use_container_width=True)
+
+                with tab_y2:
+                    df_y_rebase = apply_rebasing(df_yield_raw, rebase_code)
+                    if not df_y_rebase.empty:
+                        fig_y2 = px.line(df_y_rebase, x=df_y_rebase.index, y=df_y_rebase.columns, title=f"Persentase Perubahan Yield ({selected_label_rebase})")
+                        fig_y2.add_hline(y=0, line_dash="dash", line_color="gray", opacity=0.5)
+                        fig_y2.update_yaxes(ticksuffix="%")
+                        fig_y2 = add_end_annotations(fig_y2, df_y_rebase)
+                        fig_y2.update_layout(xaxis_title="Tanggal", yaxis_title="Perubahan Yield (%)", legend=legend_layout_gov, hovermode="x unified")
+                        st.plotly_chart(fig_y2, use_container_width=True)
+                    else:
+                        st.warning("Data Yield tidak mencukupi untuk Rebasing.")
+            else:
+                st.warning("Data Yield tidak tersedia sama sekali di database.")
+        else:
+            st.info("Pilih minimal 1 seri obligasi.")
+    else:
+        st.warning("Data Obligasi Negara tidak tersedia di database.")
+
+    st.divider()
+    
+# # ==================== TAB 7: REKOMENDASI REFINITIV ====================
+# with tab_recommendation:
+#     st.header("🎯 Rekomendasi Fundamental (Refinitiv 1 Tahun)")
+#     st.info("ℹ️ Data ini ditarik secara berkala dari sistem backend lokal dan disimpan di database cloud untuk menjamin kecepatan dan stabilitas.")
+
+#     col_info, col_btn = st.columns([3, 1])
+#     with col_btn:
+#         # Tombol ini murni untuk men-trigger penarikan ulang dari database, bukan dari API
+#         refresh_btn = st.button("🔄 Muat Ulang Database", use_container_width=True)
+
+#     # Menarik data dari tabel khusus metrik yang sudah diisi oleh script lokalmu
+#     with st.spinner("Mengambil metrik fundamental dari database..."):
+#         try:
+#             # Panggil Supabase
+#             response = supabase.table("mf_refinitiv_metrics").select("*").execute()
+            
+#             if response.data:
+#                 df_metrics = pd.DataFrame(response.data)
+                
+#                 # Rapikan kolom dan atur ticker sebagai index
+#                 df_metrics = df_metrics.set_index('ticker')
+                
+#                 # Cek kapan terakhir kali data ini disinkronkan oleh laptopmu
+#                 if 'updated_at' in df_metrics.columns:
+#                     latest_sync = pd.to_datetime(df_metrics['updated_at']).max()
+#                     st.caption(f"🕒 **Update Terakhir:** {latest_sync.strftime('%d %b %Y, %H:%M WIB')}")
+#                     df_metrics = df_metrics.drop(columns=['updated_at'])
+                
+#                 # Tampilkan tabel dengan rapi
+#                 st.dataframe(
+#                     df_metrics.style.format("{:.4f}", na_rep="-")
+#                               .background_gradient(cmap='RdYlGn', subset=['sharpe_1y', 'alpha_1y']),
+#                     use_container_width=True,
+#                     height=500
+#                 )
 #             else:
-#                 st.warning("Data Yield tidak tersedia sama sekali di database.")
-#         else:
-#             st.info("Pilih minimal 1 seri obligasi.")
-#     else:
-#         st.warning("Data Obligasi Negara tidak tersedia di database.")
-
-#     st.divider()
-# # ==================== TAB 7: REKOMENDASI FUNDAMENTAL (MANUAL UPLOAD) ====================
+#                 st.warning("⚠️ Belum ada data metrik di database. Pastikan script lokal penarik Refinitiv di laptopmu sudah dijalankan.")
+#         except Exception as e:
+#             st.error(f"❌ Gagal membaca database: {e}") 
+# ==================== TAB 7: REKOMENDASI FUNDAMENTAL (MANUAL UPLOAD) ====================
 # with tab_recommendation:
 #     st.header("🎯 Peringkat Fundamental (Data Manual)")
 #     st.info("Unggah file Excel atau CSV berisi metrik fundamental. Sistem memprioritaskan skor tinggi untuk Alpha/Sharpe/Treynor dan skor rendah untuk StdDev.")
