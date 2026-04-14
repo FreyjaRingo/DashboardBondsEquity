@@ -2078,7 +2078,7 @@ with tab_compare:
         st.subheader("📊 Kinerja Absolut & Relatif")
         
         fig_prices = px.line(df_compare, x=df_compare.index, y=df_compare.columns, title="Harga Historis Aktual (NAV)")
-        fig_prices.update_layout(xaxis_title="Tanggal", yaxis_title="Harga", legend=legend_layout)
+        fig_prices.update_layout(xaxis_title="Tanggal", yaxis_title="Harga", legend=legend_layout, height=900)
         st.plotly_chart(fig_prices, use_container_width=True)
         
         # Kalkulasi Return Kumulatif
@@ -2126,14 +2126,15 @@ with tab_compare:
             xaxis_title="Tanggal", 
             yaxis_title="Return (%)", 
             legend=legend_layout,
-            margin=dict(r=70) # Margin diperlebar sedikit lagi untuk ruang kotak warna
+            margin=dict(r=70), # Margin diperlebar sedikit lagi untuk ruang kotak warna
+            height=900
         )
         st.plotly_chart(fig_returns, use_container_width=True)
         
         running_max = df_compare.expanding().max()
         drawdown = (df_compare - running_max) / running_max * 100
         fig_dd = px.line(drawdown, x=drawdown.index, y=drawdown.columns, title="Drawdown dari Nilai Tertinggi (%)")
-        fig_dd.update_layout(xaxis_title="Tanggal", yaxis_title="Drawdown (%)", yaxis_tickformat='.1f', legend=legend_layout)
+        fig_dd.update_layout(xaxis_title="Tanggal", yaxis_title="Drawdown (%)", yaxis_tickformat='.1f', legend=legend_layout, height=900)
         st.plotly_chart(fig_dd, use_container_width=True)
         
         st.divider()
@@ -2227,7 +2228,8 @@ with tab_compare:
                 yaxis_title="NAV / Harga", 
                 legend=legend_layout, 
                 hovermode="x unified",
-                template=template_style # Paksa template bawaan Plotly
+                template=template_style, # Paksa template bawaan Plotly
+                height=900
             )
             
             # PENTING: theme=None mematikan override warna default dari Streamlit
@@ -2252,29 +2254,166 @@ with tab_compare:
         if ts_data:
             if 'Alpha' in ts_data and not ts_data['Alpha'].empty:
                 fig_alpha = px.line(ts_data['Alpha'], title=f"Pergerakan Alpha dengan Benchmark {selected_bench_label} ({dynamic_window} Hari)")
-                fig_alpha.update_layout(xaxis_title="Tanggal", yaxis_title="Alpha", legend=legend_layout)
+                fig_alpha.update_layout(xaxis_title="Tanggal", yaxis_title="Alpha", legend=legend_layout, height=800)
                 st.plotly_chart(fig_alpha, use_container_width=True)
                 
             if 'Beta' in ts_data and not ts_data['Beta'].empty:
                 fig_beta = px.line(ts_data['Beta'], title=f"Pergerakan Beta dengan Benchmark {selected_bench_label} ({dynamic_window} Hari)")
-                fig_beta.update_layout(xaxis_title="Tanggal", yaxis_title="Beta", legend=legend_layout)
+                fig_beta.update_layout(xaxis_title="Tanggal", yaxis_title="Beta", legend=legend_layout, height=800)
                 st.plotly_chart(fig_beta, use_container_width=True)
                 
             if 'Sharpe_Ratio' in ts_data and not ts_data['Sharpe_Ratio'].empty:
                 fig_sharpe = px.line(ts_data['Sharpe_Ratio'], title=f"Pergerakan Sharpe Ratio dengan Benchmark {selected_bench_label} ({dynamic_window} Hari)")
-                fig_sharpe.update_layout(xaxis_title="Tanggal", yaxis_title="Sharpe Ratio", legend=legend_layout)
+                fig_sharpe.update_layout(xaxis_title="Tanggal", yaxis_title="Sharpe Ratio", legend=legend_layout, height=800)
                 st.plotly_chart(fig_sharpe, use_container_width=True)
                 
             if 'Volatility' in ts_data and not ts_data['Volatility'].empty:
                 fig_vol = px.line(ts_data['Volatility'], title=f"Pergerakan Risk (Std Dev, {dynamic_window} Hari)")
-                fig_vol.update_layout(xaxis_title="Tanggal", yaxis_title="Volatility", legend=legend_layout)
+                fig_vol.update_layout(xaxis_title="Tanggal", yaxis_title="Volatility", legend=legend_layout, height=800)
                 st.plotly_chart(fig_vol, use_container_width=True)
         else:
             st.info("Tidak ada data metrik time-series untuk instrumen yang dipilih.")
+           
+        st.divider()
+        
+        # --- 4. Analisis Harga & Momentum Divergensi (Dual Panel) ---
+        st.subheader("📉 Analisis Harga & Momentum (Divergensi)")
+        st.caption("Panel Atas: Harga Aktual (NAV). Panel Bawah: Osilator RSI. Penanda muncul ketika terjadi divergensi antara arah harga dan momentum.")
+        
+        # Panel kontrol parameter
+        col_rsi1, col_rsi2, col_rsi3 = st.columns(3)
+        with col_rsi1:
+            rsi_period = st.number_input("RSI Period", min_value=1, value=14, key="rsi_period_dual")
+        with col_rsi2:
+            # UBAH: Menjadi Multiselect agar bisa memilih banyak range sekaligus
+            lb_lengths = st.multiselect(
+                "Pivot Lookback Range (Kiri & Kanan)", 
+                options=[2, 3, 4, 5, 6, 7, 8], 
+                default=[3, 4, 5], 
+                key="rsi_lb_dual"
+            )
+        with col_rsi3:
+            div_target = st.selectbox("Pilih Instrumen untuk Analisis Terpusat", options=selected_instruments, key="rsi_inst_dual")
             
+        if div_target and lb_lengths:
+            price_series = df_compare[div_target].dropna()
+            
+            # --- Kalkulasi RSI ---
+            delta = price_series.diff()
+            up = delta.clip(lower=0)
+            down = -1 * delta.clip(upper=0)
+            ema_up = up.ewm(alpha=1/rsi_period, adjust=False).mean()
+            ema_down = down.ewm(alpha=1/rsi_period, adjust=False).mean()
+            rs = ema_up / ema_down
+            rsi_series = 100 - (100 / (1 + rs))
+            
+            # --- Deteksi Divergensi (Looping multi-lookback) ---
+            # Menggunakan dictionary agar sinyal di hari yang sama tidak bertumpuk
+            bull_signals = {}
+            bear_signals = {}
+            
+            for lb_len in lb_lengths:
+                pivot_lows = []
+                pivot_highs = []
+                
+                for i in range(lb_len, len(rsi_series) - lb_len):
+                    window_rsi = rsi_series.iloc[i-lb_len : i+lb_len+1]
+                    current_date = rsi_series.index[i]
+                    
+                    # Cek Pivot Low
+                    if rsi_series.iloc[i] == window_rsi.min():
+                        pivot_lows.append((i, price_series.iloc[i], rsi_series.iloc[i]))
+                        if len(pivot_lows) > 1:
+                            prev_i, prev_p, prev_r = pivot_lows[-2]
+                            if 5 <= (i - prev_i) <= 60:
+                                if price_series.iloc[i] < prev_p and rsi_series.iloc[i] > prev_r: # Reg Bull
+                                    bull_signals[current_date] = (price_series.iloc[i], rsi_series.iloc[i], "Bull")
+                                elif price_series.iloc[i] > prev_p and rsi_series.iloc[i] < prev_r: # Hidden Bull
+                                    bull_signals[current_date] = (price_series.iloc[i], rsi_series.iloc[i], "H Bull")
+                                    
+                    # Cek Pivot High
+                    if rsi_series.iloc[i] == window_rsi.max():
+                        pivot_highs.append((i, price_series.iloc[i], rsi_series.iloc[i]))
+                        if len(pivot_highs) > 1:
+                            prev_i, prev_p, prev_r = pivot_highs[-2]
+                            if 5 <= (i - prev_i) <= 60:
+                                if price_series.iloc[i] > prev_p and rsi_series.iloc[i] < prev_r: # Reg Bear
+                                    bear_signals[current_date] = (price_series.iloc[i], rsi_series.iloc[i], "Bear")
+                                elif price_series.iloc[i] < prev_p and rsi_series.iloc[i] > prev_r: # Hidden Bear
+                                    bear_signals[current_date] = (price_series.iloc[i], rsi_series.iloc[i], "H Bear")
+
+            # Ekstrak data dari dictionary ke dalam list untuk di-plot
+            x_bull = list(bull_signals.keys())
+            y_bull_price = [val[0] for val in bull_signals.values()]
+            y_bull_rsi = [val[1] for val in bull_signals.values()]
+            text_bull = [val[2] for val in bull_signals.values()]
+
+            x_bear = list(bear_signals.keys())
+            y_bear_price = [val[0] for val in bear_signals.values()]
+            y_bear_rsi = [val[1] for val in bear_signals.values()]
+            text_bear = [val[2] for val in bear_signals.values()]
+
+            # --- Membuat Dual Subplots ---
+            fig_dual = make_subplots(rows=2, cols=1, shared_xaxes=True, 
+                                     vertical_spacing=0.05, row_heights=[0.6, 0.4])
+
+            # ================= PANEL ATAS: HARGA (NAV) =================
+            fig_dual.add_trace(go.Scatter(x=price_series.index, y=price_series, mode='lines', 
+                                          name=f'NAV {div_target}', line=dict(color='orange', width=2)), row=1, col=1)
+            
+            # Sinyal Divergensi pada Harga
+            if x_bull:
+                fig_dual.add_trace(go.Scatter(
+                    x=x_bull, y=y_bull_price, mode='markers+text',
+                    marker=dict(symbol='triangle-up', size=12, color='green', line=dict(color='white', width=1)),
+                    text=text_bull, textposition="bottom center", name="Potensi Naik"
+                ), row=1, col=1)
+                
+            if x_bear:
+                fig_dual.add_trace(go.Scatter(
+                    x=x_bear, y=y_bear_price, mode='markers+text',
+                    marker=dict(symbol='triangle-down', size=12, color='red', line=dict(color='white', width=1)),
+                    text=text_bear, textposition="top center", name="Potensi Turun"
+                ), row=1, col=1)
+
+            # ================= PANEL BAWAH: RSI =================
+            fig_dual.add_hrect(y0=30, y1=70, fillcolor="rgba(33, 150, 243, 0.1)", line_width=0, row=2, col=1)
+            fig_dual.add_trace(go.Scatter(x=rsi_series.index, y=rsi_series, mode='lines', 
+                                          name='RSI', line=dict(color='#2962FF', width=1.5)), row=2, col=1)
+            
+            for val in [30, 50, 70]:
+                fig_dual.add_hline(y=val, line_dash="dot", line_color='#787B86', row=2, col=1)
+
+            # Sinyal Divergensi pada RSI
+            if x_bull:
+                fig_dual.add_trace(go.Scatter(
+                    x=x_bull, y=y_bull_rsi, mode='markers',
+                    marker=dict(symbol='circle', size=8, color='green'), showlegend=False
+                ), row=2, col=1)
+                
+            if x_bear:
+                fig_dual.add_trace(go.Scatter(
+                    x=x_bear, y=y_bear_rsi, mode='markers',
+                    marker=dict(symbol='circle', size=8, color='red'), showlegend=False
+                ), row=2, col=1)
+
+            # --- Konfigurasi Layout Final ---
+            fig_dual.update_layout(
+                title=f"Analisis Divergensi Dinamis: {div_target}",
+                height=1000,
+                hovermode="x unified",
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5)
+            )
+            
+            fig_dual.update_yaxes(title_text="Harga Aktual", row=1, col=1)
+            fig_dual.update_yaxes(title_text="RSI (0-100)", range=[0, 100], row=2, col=1)
+            fig_dual.update_xaxes(showspikes=True, spikemode="across", spikesnap="cursor", showline=True, showgrid=True)
+            
+            st.plotly_chart(fig_dual, use_container_width=True) 
     else:
         st.info("Silakan pilih instrumen dari dropdown di atas untuk memulai analisis.")
        
+    
 #==================== TAB 6: GRAFIK OBLIGASI NEGARA ====================
 with tab_gov_bonds:
     st.header("🏛️ Grafik Obligasi Negara (SBN/SUN/Sukuk)")
@@ -2364,7 +2503,7 @@ with tab_gov_bonds:
                     return df_rebased
                 return pd.DataFrame()
 
-            def add_end_annotations(fig, df_plot):
+            def add_end_annotations(fig, df_plot, is_percent=True):
                 if df_plot.empty: return fig
                 line_colors = {trace.name: trace.line.color for trace in fig.data}
                 last_date = df_plot.index[-1]
@@ -2372,8 +2511,9 @@ with tab_gov_bonds:
                     last_val = df_plot[col].dropna().iloc[-1] if not df_plot[col].dropna().empty else None
                     if last_val is not None:
                         bg_color = line_colors.get(col, "gray")
+                        text_val = f"<b>{last_val:.2f}%</b>" if is_percent else f"<b>{last_val:.2f}</b>"
                         fig.add_annotation(
-                            x=last_date, y=last_val, text=f"<b>{last_val:.2f}%</b>",
+                            x=last_date, y=last_val, text=text_val,
                             showarrow=False, xanchor="left", xshift=8, 
                             font=dict(size=11, color="white"), bgcolor=bg_color, borderpad=3, opacity=0.9
                         )
@@ -2402,7 +2542,8 @@ with tab_gov_bonds:
                 df_p_gran = apply_granularity(df_price_raw, gran_code)
                 fig_p1 = px.line(df_p_gran, x=df_p_gran.index, y=df_p_gran.columns, title=f"Harga Aktual - Interval {selected_label_gran}")
                 if gran_code != "1D": fig_p1.update_traces(mode='lines+markers')
-                fig_p1.update_layout(xaxis_title="Tanggal", yaxis_title="Ask Price", legend=legend_layout_gov, hovermode="x unified")
+                fig_p1 = add_end_annotations(fig_p1, df_p_gran, is_percent=False)
+                fig_p1.update_layout(xaxis_title="Tanggal", yaxis_title="Ask Price", yaxis=dict(side='right'), legend=legend_layout_gov, hovermode="x unified", height=900)
                 st.plotly_chart(fig_p1, use_container_width=True)
 
             with tab_p2:
@@ -2411,8 +2552,8 @@ with tab_gov_bonds:
                     fig_p2 = px.line(df_p_rebase, x=df_p_rebase.index, y=df_p_rebase.columns, title=f"Persentase Kenaikan Harga ({selected_label_rebase})")
                     fig_p2.add_hline(y=0, line_dash="dash", line_color="gray", opacity=0.5)
                     fig_p2.update_yaxes(ticksuffix="%")
-                    fig_p2 = add_end_annotations(fig_p2, df_p_rebase)
-                    fig_p2.update_layout(xaxis_title="Tanggal", yaxis_title="Perubahan Harga (%)", legend=legend_layout_gov, hovermode="x unified")
+                    fig_p2 = add_end_annotations(fig_p2, df_p_rebase, is_percent=True)
+                    fig_p2.update_layout(xaxis_title="Tanggal", yaxis_title="Perubahan Harga (%)", yaxis=dict(side='right'), legend=legend_layout_gov, hovermode="x unified", height=900)
                     st.plotly_chart(fig_p2, use_container_width=True)
                 else:
                     st.warning("Data tidak mencukupi untuk Rebasing.")
@@ -2424,26 +2565,13 @@ with tab_gov_bonds:
             st.subheader("📉 Analisis Imbal Hasil (Ask Yield)")
             
             if not df_yield_raw.empty:
-                tab_y1, tab_y2 = st.tabs(["1. Yield Mentah (Granularitas)", "2. Persentase Perubahan (Rebasing)"])
-                
-                with tab_y1:
-                    df_y_gran = apply_granularity(df_yield_raw, gran_code)
-                    fig_y1 = px.line(df_y_gran, x=df_y_gran.index, y=df_y_gran.columns, title=f"Yield Aktual (%) - Interval {selected_label_gran}")
-                    if gran_code != "1D": fig_y1.update_traces(mode='lines+markers')
-                    fig_y1.update_layout(xaxis_title="Tanggal", yaxis_title="Ask Yield (%)", legend=legend_layout_gov, hovermode="x unified")
-                    st.plotly_chart(fig_y1, use_container_width=True)
-
-                with tab_y2:
-                    df_y_rebase = apply_rebasing(df_yield_raw, rebase_code)
-                    if not df_y_rebase.empty:
-                        fig_y2 = px.line(df_y_rebase, x=df_y_rebase.index, y=df_y_rebase.columns, title=f"Persentase Perubahan Yield ({selected_label_rebase})")
-                        fig_y2.add_hline(y=0, line_dash="dash", line_color="gray", opacity=0.5)
-                        fig_y2.update_yaxes(ticksuffix="%")
-                        fig_y2 = add_end_annotations(fig_y2, df_y_rebase)
-                        fig_y2.update_layout(xaxis_title="Tanggal", yaxis_title="Perubahan Yield (%)", legend=legend_layout_gov, hovermode="x unified")
-                        st.plotly_chart(fig_y2, use_container_width=True)
-                    else:
-                        st.warning("Data Yield tidak mencukupi untuk Rebasing.")
+                df_y_gran = apply_granularity(df_yield_raw, gran_code)
+                fig_y1 = px.line(df_y_gran, x=df_y_gran.index, y=df_y_gran.columns, title=f"Yield Aktual (%) - Interval {selected_label_gran}")
+                if gran_code != "1D": fig_y1.update_traces(mode='lines+markers')
+                fig_y1.update_yaxes(ticksuffix="%")
+                fig_y1 = add_end_annotations(fig_y1, df_y_gran, is_percent=True)
+                fig_y1.update_layout(xaxis_title="Tanggal", yaxis_title="Ask Yield (%)", yaxis=dict(side='right'), legend=legend_layout_gov, hovermode="x unified", height=900)
+                st.plotly_chart(fig_y1, use_container_width=True)
             else:
                 st.warning("Data Yield tidak tersedia sama sekali di database.")
         else:
@@ -2453,45 +2581,45 @@ with tab_gov_bonds:
 
     st.divider()
     
-# # ==================== TAB 7: REKOMENDASI REFINITIV ====================
-# with tab_recommendation:
-#     st.header("🎯 Rekomendasi Fundamental (Refinitiv 1 Tahun)")
-#     st.info("ℹ️ Data ini ditarik secara berkala dari sistem backend lokal dan disimpan di database cloud untuk menjamin kecepatan dan stabilitas.")
+# ==================== TAB 7: REKOMENDASI REFINITIV ====================
+with tab_recommendation:
+    st.header("🎯 Rekomendasi Fundamental (Refinitiv 1 Tahun)")
+    st.info("ℹ️ Data ini ditarik secara berkala dari sistem backend lokal dan disimpan di database cloud untuk menjamin kecepatan dan stabilitas.")
 
-#     col_info, col_btn = st.columns([3, 1])
-#     with col_btn:
-#         # Tombol ini murni untuk men-trigger penarikan ulang dari database, bukan dari API
-#         refresh_btn = st.button("🔄 Muat Ulang Database", use_container_width=True)
+    col_info, col_btn = st.columns([3, 1])
+    with col_btn:
+        # Tombol ini murni untuk men-trigger penarikan ulang dari database, bukan dari API
+        refresh_btn = st.button("🔄 Muat Ulang Database", use_container_width=True)
 
-#     # Menarik data dari tabel khusus metrik yang sudah diisi oleh script lokalmu
-#     with st.spinner("Mengambil metrik fundamental dari database..."):
-#         try:
-#             # Panggil Supabase
-#             response = supabase.table("mf_refinitiv_metrics").select("*").execute()
+    # Menarik data dari tabel khusus metrik yang sudah diisi oleh script lokalmu
+    with st.spinner("Mengambil metrik fundamental dari database..."):
+        try:
+            # Panggil Supabase
+            response = supabase.table("mf_refinitiv_metrics").select("*").execute()
             
-#             if response.data:
-#                 df_metrics = pd.DataFrame(response.data)
+            if response.data:
+                df_metrics = pd.DataFrame(response.data)
                 
-#                 # Rapikan kolom dan atur ticker sebagai index
-#                 df_metrics = df_metrics.set_index('ticker')
+                # Rapikan kolom dan atur ticker sebagai index
+                df_metrics = df_metrics.set_index('ticker')
                 
-#                 # Cek kapan terakhir kali data ini disinkronkan oleh laptopmu
-#                 if 'updated_at' in df_metrics.columns:
-#                     latest_sync = pd.to_datetime(df_metrics['updated_at']).max()
-#                     st.caption(f"🕒 **Update Terakhir:** {latest_sync.strftime('%d %b %Y, %H:%M WIB')}")
-#                     df_metrics = df_metrics.drop(columns=['updated_at'])
+                # Cek kapan terakhir kali data ini disinkronkan oleh laptopmu
+                if 'updated_at' in df_metrics.columns:
+                    latest_sync = pd.to_datetime(df_metrics['updated_at']).max()
+                    st.caption(f"🕒 **Update Terakhir:** {latest_sync.strftime('%d %b %Y, %H:%M WIB')}")
+                    df_metrics = df_metrics.drop(columns=['updated_at'])
                 
-#                 # Tampilkan tabel dengan rapi
-#                 st.dataframe(
-#                     df_metrics.style.format("{:.4f}", na_rep="-")
-#                               .background_gradient(cmap='RdYlGn', subset=['sharpe_1y', 'alpha_1y']),
-#                     use_container_width=True,
-#                     height=500
-#                 )
-#             else:
-#                 st.warning("⚠️ Belum ada data metrik di database. Pastikan script lokal penarik Refinitiv di laptopmu sudah dijalankan.")
-#         except Exception as e:
-#             st.error(f"❌ Gagal membaca database: {e}") 
+                # Tampilkan tabel dengan rapi
+                st.dataframe(
+                    df_metrics.style.format("{:.4f}", na_rep="-")
+                              .background_gradient(cmap='RdYlGn', subset=['sharpe_1y', 'alpha_1y']),
+                    use_container_width=True,
+                    height=500
+                )
+            else:
+                st.warning("⚠️ Belum ada data metrik di database. Pastikan script lokal penarik Refinitiv di laptopmu sudah dijalankan.")
+        except Exception as e:
+            st.error(f"❌ Gagal membaca database: {e}") 
 # ==================== TAB 7: REKOMENDASI FUNDAMENTAL (MANUAL UPLOAD) ====================
 # with tab_recommendation:
 #     st.header("🎯 Peringkat Fundamental (Data Manual)")
