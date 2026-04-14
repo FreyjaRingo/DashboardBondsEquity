@@ -1347,14 +1347,14 @@ ranked_products_bond = calculate_ranking_scores(metrics_bond, weights=weights_di
 leaderboard_daily = calculate_daily_leaderboard(df_all_instruments, days=7)
 
 # ==================== TABS ====================
-tab_overview, tab_leaderboard_split,  tab_performance, tab_correlation, tab_compare, tab_gov_bonds, tab_recommendation  = st.tabs([
+tab_overview, tab_leaderboard_split,  tab_performance, tab_correlation, tab_compare, tab_gov_bonds = st.tabs([
     "📋 Ringkasan", 
     "🏆 Leaderboard", 
     "📊 Performa & Ranking", 
     "📈 Korelasi",  
     "📉 Perbandingan Historis",
     "🏛️ Obligasi Negara",
-    "💡 Rekomendasi"
+    #"💡 Rekomendasi", tab_recommendation 
 ])
 
 # --- Tab 1: Ringkasan ---
@@ -2582,44 +2582,44 @@ with tab_gov_bonds:
     st.divider()
     
 # ==================== TAB 7: REKOMENDASI REFINITIV ====================
-with tab_recommendation:
-    st.header("🎯 Rekomendasi Fundamental (Refinitiv 1 Tahun)")
-    st.info("ℹ️ Data ini ditarik secara berkala dari sistem backend lokal dan disimpan di database cloud untuk menjamin kecepatan dan stabilitas.")
+# with tab_recommendation:
+#     st.header("🎯 Rekomendasi Fundamental (Refinitiv 1 Tahun)")
+#     st.info("ℹ️ Data ini ditarik secara berkala dari sistem backend lokal dan disimpan di database cloud untuk menjamin kecepatan dan stabilitas.")
 
-    col_info, col_btn = st.columns([3, 1])
-    with col_btn:
-        # Tombol ini murni untuk men-trigger penarikan ulang dari database, bukan dari API
-        refresh_btn = st.button("🔄 Muat Ulang Database", use_container_width=True)
+#     col_info, col_btn = st.columns([3, 1])
+#     with col_btn:
+#         # Tombol ini murni untuk men-trigger penarikan ulang dari database, bukan dari API
+#         refresh_btn = st.button("🔄 Muat Ulang Database", use_container_width=True)
 
-    # Menarik data dari tabel khusus metrik yang sudah diisi oleh script lokalmu
-    with st.spinner("Mengambil metrik fundamental dari database..."):
-        try:
-            # Panggil Supabase
-            response = supabase.table("mf_refinitiv_metrics").select("*").execute()
+#     # Menarik data dari tabel khusus metrik yang sudah diisi oleh script lokalmu
+#     with st.spinner("Mengambil metrik fundamental dari database..."):
+#         try:
+#             # Panggil Supabase
+#             response = supabase.table("mf_refinitiv_metrics").select("*").execute()
             
-            if response.data:
-                df_metrics = pd.DataFrame(response.data)
+#             if response.data:
+#                 df_metrics = pd.DataFrame(response.data)
                 
-                # Rapikan kolom dan atur ticker sebagai index
-                df_metrics = df_metrics.set_index('ticker')
+#                 # Rapikan kolom dan atur ticker sebagai index
+#                 df_metrics = df_metrics.set_index('ticker')
                 
-                # Cek kapan terakhir kali data ini disinkronkan oleh laptopmu
-                if 'updated_at' in df_metrics.columns:
-                    latest_sync = pd.to_datetime(df_metrics['updated_at']).max()
-                    st.caption(f"🕒 **Update Terakhir:** {latest_sync.strftime('%d %b %Y, %H:%M WIB')}")
-                    df_metrics = df_metrics.drop(columns=['updated_at'])
+#                 # Cek kapan terakhir kali data ini disinkronkan oleh laptopmu
+#                 if 'updated_at' in df_metrics.columns:
+#                     latest_sync = pd.to_datetime(df_metrics['updated_at']).max()
+#                     st.caption(f"🕒 **Update Terakhir:** {latest_sync.strftime('%d %b %Y, %H:%M WIB')}")
+#                     df_metrics = df_metrics.drop(columns=['updated_at'])
                 
-                # Tampilkan tabel dengan rapi
-                st.dataframe(
-                    df_metrics.style.format("{:.4f}", na_rep="-")
-                              .background_gradient(cmap='RdYlGn', subset=['sharpe_1y', 'alpha_1y']),
-                    use_container_width=True,
-                    height=500
-                )
-            else:
-                st.warning("⚠️ Belum ada data metrik di database. Pastikan script lokal penarik Refinitiv di laptopmu sudah dijalankan.")
-        except Exception as e:
-            st.error(f"❌ Gagal membaca database: {e}") 
+#                 # Tampilkan tabel dengan rapi
+#                 st.dataframe(
+#                     df_metrics.style.format("{:.4f}", na_rep="-")
+#                               .background_gradient(cmap='RdYlGn', subset=['sharpe_1y', 'alpha_1y']),
+#                     use_container_width=True,
+#                     height=500
+#                 )
+#             else:
+#                 st.warning("⚠️ Belum ada data metrik di database. Pastikan script lokal penarik Refinitiv di laptopmu sudah dijalankan.")
+#         except Exception as e:
+#             st.error(f"❌ Gagal membaca database: {e}") 
 # ==================== TAB 7: REKOMENDASI FUNDAMENTAL (MANUAL UPLOAD) ====================
 # with tab_recommendation:
 #     st.header("🎯 Peringkat Fundamental (Data Manual)")
