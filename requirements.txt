@@ -10,4 +10,4 @@ scikit-learn
 plotly
 supabase
 postgrest
-pyindicators
+pyindicators==0.22.0
