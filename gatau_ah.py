@@ -2340,18 +2340,21 @@ def render_main_dashboard():
             # =====================================================================
             st.divider()
             st.subheader("🧭 Analisis Rezim Pasar Makro (Sistem Skoring Dinamis)")
-            st.caption("Mendeteksi fase pasar menggunakan konfluensi 3 pilar: Multi-Timeframe Struktur Harga (Breakout), Momentum Relatif (RSI), dan Aliran Dana (Price-Volume Confluence).")
+            st.caption("Mendeteksi fase pasar menggunakan konfluensi 3 pilar: Multi-Timeframe Struktur Harga (CHoCH/BOS), Momentum Relatif (RSI), dan Aliran Dana (Momentum Confluence).")
 
             col_r1, col_r2 = st.columns(2)
             with col_r1:
                 regime_target = st.selectbox("Pilih Instrumen untuk Analisis Rezim:", options=selected_instruments, key="regime_inst")
             with col_r2:
                 # Dropdown Multi-Length untuk Struktur Harga
-                struktur_lengths = st.multiselect("Rentang Deteksi Pivot (Struktur Harga)", options=[3, 5, 7, 10, 14, 21, 50], default=[5, 7, 10], key="regime_lb")
+                struktur_lengths = st.multiselect("Rentang Deteksi Pivot (Struktur Harga)", options=[2, 3, 4, 5, 6, 7, 8, 10, 14], default=[3, 4, 5], key="regime_lb")
 
             if regime_target and struktur_lengths:
-                with st.spinner("Mengkalkulasi Mesin Skoring Konfluensi..."):
+                with st.spinner("Mengkalkulasi model Machine Learning & Indikator PyIndicators..."):
                     try:
+                        # Import library indikator
+                        from pyindicators import market_structure_choch_bos, momentum_confluence, rsi
+
                         price_series_regime = df_compare[regime_target].dropna()
 
                         # 1. PRE-PROCESSING: Integrasi Likuiditas Makro Aktual
@@ -2365,55 +2368,53 @@ def render_main_dashboard():
                             proxy_vol_series = 1000000 
 
                         df_ta = pd.DataFrame({
+                            'Open': price_series_regime,
+                            'High': price_series_regime * 1.0001, 
+                            'Low': price_series_regime * 0.9999,
                             'Close': price_series_regime,
                             'Volume': proxy_vol_series
                         })
 
-                        # ==========================================================
-                        # 2. EKSEKUSI INDIKATOR (ARSITEKTUR HYBRID)
-                        # ==========================================================
-                        
-                        # PILAR 1: Market Structure (Multi-Length Breakout) - PURE PANDAS
+                        # 2. EKSEKUSI INDIKATOR
+                        # PILAR 1: Market Structure (Multi-Length Aggregation)
                         df_ta['agg_market_trend'] = 0.0
                         choch_bull_dates = set()
                         choch_bear_dates = set()
 
                         for l in struktur_lengths:
-                            swing_high = df_ta['Close'].rolling(window=l).max().shift(1)
-                            swing_low = df_ta['Close'].rolling(window=l).min().shift(1)
+                            # Evaluasi struktur untuk setiap rentang yang dipilih
+                            df_temp = market_structure_choch_bos(df_ta.copy(), length=l)
+                            df_ta['agg_market_trend'] += df_temp['market_trend'].fillna(0)
+                        
+                            # Kumpulkan tanggal CHoCH agar marker tidak duplikat
+                            if 'choch_bullish' in df_temp.columns:
+                                bulls = df_temp[df_temp['choch_bullish'] == 1].index
+                                choch_bull_dates.update(bulls)
+                            if 'choch_bearish' in df_temp.columns:
+                                bears = df_temp[df_temp['choch_bearish'] == 1].index
+                                choch_bear_dates.update(bears)
 
-                            bull_cross = (df_ta['Close'] > swing_high) & (df_ta['Close'].shift(1) <= swing_high.shift(1))
-                            bear_cross = (df_ta['Close'] < swing_low) & (df_ta['Close'].shift(1) >= swing_low.shift(1))
-
-                            choch_bull_dates.update(df_ta[bull_cross].index)
-                            choch_bear_dates.update(df_ta[bear_cross].index)
-
-                            trend_l = np.where(df_ta['Close'] > df_ta['Close'].rolling(l).mean(), 1, -1)
-                            df_ta['agg_market_trend'] += trend_l
-
+                        # Rata-ratakan skor tren struktur agar batas bobot tetap proporsional (Maksimal 1 atau -1)
                         df_ta['agg_market_trend'] = df_ta['agg_market_trend'] / len(struktur_lengths)
-                        df_ta['score_structure'] = df_ta['agg_market_trend'] * 40
 
-                        # PILAR 2: RSI (Momentum Leading) - PYINDICATORS
-                        from pyindicators import rsi
-                        # Menggunakan library teroptimasi untuk indikator standar
+                        # Pilar 2: RSI (Indikator Momentum Leading)
                         df_ta = rsi(df_ta, source_column='Close', period=14, result_column='RSI_14')
 
+                        # Pilar 3: Momentum Confluence (Aliran Dana berbasis Volume Makro)
+                        df_ta = momentum_confluence(df_ta)
+
+                        # 3. MESIN SKORING
+                        # Mengalikan koefisien agregat struktur dengan bobot maksimal 40
+                        df_ta['score_structure'] = df_ta['agg_market_trend'] * 40
+
+                        # Normalisasi RSI: Skala 0-100 menjadi koefisien -1 hingga 1.
                         rsi_normalized = (df_ta['RSI_14'] - 50) / 20
                         rsi_normalized = rsi_normalized.clip(lower=-1, upper=1)
                         df_ta['score_rsi'] = rsi_normalized.fillna(0) * 35
 
-                        # PILAR 3: Momentum Confluence (Aliran Dana Makro) - PURE PANDAS
-                        vol_ma = df_ta['Volume'].rolling(20).mean()
-                        price_dir = np.sign(df_ta['Close'].diff())
-                        
-                        vol_multiplier = np.where(df_ta['Volume'] > vol_ma, 1.0, 0.5) 
-                        df_ta['mc_trend'] = price_dir * vol_multiplier
                         df_ta['score_momentum'] = df_ta['mc_trend'].fillna(0) * 25
-                        
-                        # ==========================================================
-                        # 3. MESIN SKORING FINAL
-                        # ==========================================================
+
+                        # Agregasi Total Skor
                         df_ta['net_regime_score'] = df_ta['score_structure'] + df_ta['score_rsi'] + df_ta['score_momentum']
 
                         def get_regime_label(score):
@@ -2425,9 +2426,7 @@ def render_main_dashboard():
 
                         df_ta['Regime'] = df_ta['net_regime_score'].apply(get_regime_label)
 
-                        # ==========================================================
                         # 4. VISUALISASI DENGAN DETAIL KOMPONEN
-                        # ==========================================================
                         fig_regime = make_subplots(rows=2, cols=1, shared_xaxes=True, 
                                                  vertical_spacing=0.08, row_heights=[0.60, 0.40])
 
@@ -2455,7 +2454,7 @@ def render_main_dashboard():
                         fig_regime.add_trace(go.Bar(x=df_ta.index, y=df_ta['score_structure'], name='Skor Struktur (40)', marker_color='#2962FF'), row=2, col=1)
                         fig_regime.add_trace(go.Bar(x=df_ta.index, y=df_ta['score_rsi'], name='Skor RSI (35)', marker_color='#FF6D00'), row=2, col=1)
                         fig_regime.add_trace(go.Bar(x=df_ta.index, y=df_ta['score_momentum'], name='Skor Likuiditas (25)', marker_color='#00C853'), row=2, col=1)
-                        
+                    
                         # Garis overlay untuk Total Net Score
                         fig_regime.add_trace(go.Scatter(x=df_ta.index, y=df_ta['net_regime_score'], mode='lines', name='Total Net Score', line=dict(color='white', width=1.5)), row=2, col=1)
 
@@ -2466,7 +2465,7 @@ def render_main_dashboard():
                             title=f"Siklus Rezim Pasar Multi-Pivot: {regime_target}",
                             height=800,
                             hovermode="x unified",
-                            barmode='relative',
+                            barmode='relative', # Mengizinkan penumpukan nilai positif dan negatif
                             showlegend=True,
                             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5)
                         )
@@ -2491,14 +2490,15 @@ def render_main_dashboard():
                         with st.expander("🔍 Audit Data: Buka Dekonstruksi Skor Harian"):
                             df_details = df_ta[['Close', 'agg_market_trend', 'score_structure', 'RSI_14', 'score_rsi', 'mc_trend', 'score_momentum', 'net_regime_score', 'Regime']].copy()
                             df_details.index = df_details.index.strftime('%Y-%m-%d')
-                            
+                        
+                            # Penamaan kolom agar lebih mudah dibaca
                             df_details.columns = [
                                 'NAV', 'Koefisien Tren', 'Skor Struktur', 
                                 'Nilai RSI', 'Skor RSI', 
                                 'Koefisien Likuiditas', 'Skor Likuiditas', 
                                 'NET SCORE', 'Status Rezim'
                             ]
-                            
+                        
                             st.dataframe(
                                 df_details.sort_index(ascending=False).style.format({
                                     'NAV': '{:.2f}',
