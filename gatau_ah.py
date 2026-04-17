@@ -2370,53 +2370,47 @@ def render_main_dashboard():
                         })
 
                         # ==========================================================
-                        # 2. EKSEKUSI INDIKATOR (100% PURE PANDAS - BEBAS ERROR)
+                        # 2. EKSEKUSI INDIKATOR (ARSITEKTUR HYBRID)
                         # ==========================================================
                         
-                        # PILAR 1: Market Structure (Multi-Length Price Breakout)
+                        # PILAR 1: Market Structure (Multi-Length Breakout) - PURE PANDAS
                         df_ta['agg_market_trend'] = 0.0
                         choch_bull_dates = set()
                         choch_bear_dates = set()
 
                         for l in struktur_lengths:
-                            # Tentukan level support & resistance statis (Swing Low / High)
                             swing_high = df_ta['Close'].rolling(window=l).max().shift(1)
                             swing_low = df_ta['Close'].rolling(window=l).min().shift(1)
 
-                            # Deteksi Sinyal Breakout (Simulasi CHoCH)
                             bull_cross = (df_ta['Close'] > swing_high) & (df_ta['Close'].shift(1) <= swing_high.shift(1))
                             bear_cross = (df_ta['Close'] < swing_low) & (df_ta['Close'].shift(1) >= swing_low.shift(1))
 
                             choch_bull_dates.update(df_ta[bull_cross].index)
                             choch_bear_dates.update(df_ta[bear_cross].index)
 
-                            # Agregasi Tren Basis Harga (1 jika tren naik, -1 jika turun)
                             trend_l = np.where(df_ta['Close'] > df_ta['Close'].rolling(l).mean(), 1, -1)
                             df_ta['agg_market_trend'] += trend_l
 
                         df_ta['agg_market_trend'] = df_ta['agg_market_trend'] / len(struktur_lengths)
                         df_ta['score_structure'] = df_ta['agg_market_trend'] * 40
 
-                        # PILAR 2: RSI 14 Manual (Momentum Leading)
-                        delta = df_ta['Close'].diff()
-                        gain = delta.clip(lower=0).ewm(alpha=1/14, adjust=False).mean()
-                        loss = (-1 * delta.clip(upper=0)).ewm(alpha=1/14, adjust=False).mean()
-                        rs = gain / loss
-                        df_ta['RSI_14'] = 100 - (100 / (1 + rs))
+                        # PILAR 2: RSI (Momentum Leading) - PYINDICATORS
+                        from pyindicators import rsi
+                        # Menggunakan library teroptimasi untuk indikator standar
+                        df_ta = rsi(df_ta, source_column='Close', period=14, result_column='RSI_14')
 
                         rsi_normalized = (df_ta['RSI_14'] - 50) / 20
                         rsi_normalized = rsi_normalized.clip(lower=-1, upper=1)
                         df_ta['score_rsi'] = rsi_normalized.fillna(0) * 35
 
-                        # PILAR 3: Momentum Confluence (Aliran Dana Makro)
+                        # PILAR 3: Momentum Confluence (Aliran Dana Makro) - PURE PANDAS
                         vol_ma = df_ta['Volume'].rolling(20).mean()
                         price_dir = np.sign(df_ta['Close'].diff())
                         
-                        # Beri bobot kuat (1.0) jika volume di atas rata-rata (valid), lemah (0.5) jika sepi transaksi
                         vol_multiplier = np.where(df_ta['Volume'] > vol_ma, 1.0, 0.5) 
                         df_ta['mc_trend'] = price_dir * vol_multiplier
                         df_ta['score_momentum'] = df_ta['mc_trend'].fillna(0) * 25
-
+                        
                         # ==========================================================
                         # 3. MESIN SKORING FINAL
                         # ==========================================================
