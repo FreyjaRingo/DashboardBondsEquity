@@ -324,6 +324,25 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
+# ==================== ROUTING HALAMAN ====================
+def set_admin_false():
+    st.session_state.is_admin = False
+
+def set_admin_true():
+    st.session_state.is_admin = True
+
+if 'is_admin' not in st.session_state:
+    st.session_state.is_admin = False
+
+try:
+    pg = st.navigation([
+        st.Page(set_admin_false, title="Umum", url_path="/"),
+        st.Page(set_admin_true, title="Admin", url_path="/AsepKnalpot")
+    ], position="hidden")
+    pg.run()
+except Exception:
+    pass
+
 # ==================== FUNGSI HELPER UNTUK LOADING DATA (DB ONLY) ====================
 @st.cache_data(ttl=1800, show_spinner=False) # TTL diubah menjadi 30 menit
 def load_all_data(start_date, end_date, currency='IDR'):
@@ -967,202 +986,205 @@ with st.sidebar:
     
     st.divider()
 
-    # ==========================================
-    # BLOK KONEKSI & SINKRONISASI DATA
-    # ==========================================
-    st.subheader("🔄 Koneksi & Update Data")
+    if st.session_state.is_admin:
+        # ==========================================
+        # BLOK KONEKSI & SINKRONISASI DATA
+        # ==========================================
+        st.subheader("🔄 Koneksi & Update Data")
+        
+        # Indikator Status Koneksi API
+        if st.session_state.connected:
+            st.success("✅ Terhubung ke API Refinitiv")
+        else:
+            st.warning("⚠️ API Refinitiv Belum Terhubung")
     
-    # Indikator Status Koneksi API
-    if st.session_state.connected:
-        st.success("✅ Terhubung ke API Refinitiv")
-    else:
-        st.warning("⚠️ API Refinitiv Belum Terhubung")
-
-    col_btn1, col_btn2 = st.columns(2)
-    
-    with col_btn1:
-        # 1. TOMBOL KONEKSI
-        if st.button("🔌 Connect", use_container_width=True):
-            with st.spinner("Menghubungkan..."):
-                if init_refinitiv_session():
-                    st.session_state.connected = True
-                    st.rerun()
-                else:
-                    st.error("Koneksi gagal.")
+        col_btn1, col_btn2 = st.columns(2)
+        
+        with col_btn1:
+            # 1. TOMBOL KONEKSI
+            if st.button("🔌 Connect", use_container_width=True):
+                with st.spinner("Menghubungkan..."):
+                    if init_refinitiv_session():
+                        st.session_state.connected = True
+                        st.rerun()
+                    else:
+                        st.error("Koneksi gagal.")
+                        
+        with col_btn2:
+            # 2. TOMBOL UPDATE DATA (Aktif hanya jika sudah connect)
+            if st.button("📥 Update", type="primary", use_container_width=True, disabled=not st.session_state.connected):
+                with st.spinner("Mengecek data tertinggal..."):
+                    start_d = get_sync_start_date() 
+                    end_d = dt.datetime.today().date()
                     
-    with col_btn2:
-        # 2. TOMBOL UPDATE DATA (Aktif hanya jika sudah connect)
-        if st.button("📥 Update", type="primary", use_container_width=True, disabled=not st.session_state.connected):
-            with st.spinner("Mengecek data tertinggal..."):
-                start_d = get_sync_start_date() 
-                end_d = dt.datetime.today().date()
+                    if start_d >= end_d:
+                        st.info("✅ Database sudah mutakhir.")
+                    else:
+                        st.write(f"Menarik: **{start_d.strftime('%d/%m/%y')}** - **{end_d.strftime('%d/%m/%y')}**")
+                        try:
+                            run_daily_sync(start_d, end_d)
+                            st.session_state.end_date = end_d
+                            
+                            # --- TAMBAHKAN BARIS INI ---
+                            load_all_data.clear() 
+                            # ---------------------------
+                            
+                            st.success("Berhasil diupdate!")
+                            time.sleep(1.5)
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"❌ Update Gagal: {e}")
+                    
+        
+        # Manajemen Produk Kustom (hanya untuk IDR)
+       # ==========================================
+    if st.session_state.is_admin:
+        # ==========================================
+        # MANAJEMEN INSTRUMEN (CRUD & AUTO-BACKFILL)
+        # ==========================================
+        st.subheader("⚙️ Database Instrumen (CRUD)")
+        
+        tab_mf, tab_bond, tab_macro, tab_del = st.tabs(["Reksa Dana", "Obligasi", "Makro", "Hapus"])
+        # 1. FORM REKSA DANA
+        with tab_mf:
+            with st.form("form_add_mf"):
+                mf_ticker = st.text_input("Ticker (LP...)", placeholder="Contoh: LP68059065")
+                mf_name = st.text_input("Nama Reksa Dana")
+                mf_type = st.selectbox("Fund Type", ["Equity", "Fixed Income"])
+                mf_curr = st.selectbox("Mata Uang", ["IDR", "USD"], key="mf_c")
+                mf_release_date = st.date_input("Tanggal Rilis Produk", value=dt.date(2024, 1, 1), help="Sistem akan menarik data mulai dari tanggal ini.")
                 
-                if start_d >= end_d:
-                    st.info("✅ Database sudah mutakhir.")
-                else:
-                    st.write(f"Menarik: **{start_d.strftime('%d/%m/%y')}** - **{end_d.strftime('%d/%m/%y')}**")
-                    try:
-                        run_daily_sync(start_d, end_d)
-                        st.session_state.end_date = end_d
+                if st.form_submit_button("Tambah & Tarik Data"):
+                    if mf_ticker and mf_name:
+                        with st.spinner(f"Menarik Historis dari {mf_release_date.strftime('%Y')}..."):
+                            max_retries = 3
+                            for attempt in range(max_retries):
+                                try:
+                                    if not st.session_state.connected:
+                                        st.session_state.connected = init_refinitiv_session()
+                                        
+                                    if st.session_state.connected:
+                                        if validate_ticker(mf_ticker, "MF"):
+                                            supabase.table("mf_instruments").upsert([{"ticker": mf_ticker, "name": mf_name, "fund_type": mf_type, "currency": mf_curr}]).execute()
+                                            
+                                            # Inject Start Date dinamis
+                                            success = backfill_new_instrument("mf_nav_daily", "ticker", mf_ticker, ['TR.NETASSETVAL.date', 'TR.NETASSETVAL'], ["nav"], {'Instrument': 'ticker', 'Date': 'date', 'TR.NETASSETVAL.date': 'date', 'TR.NETASSETVAL': 'nav', 'Net Asset Value': 'nav'}, start_date_str=mf_release_date.strftime('%Y-%m-%d'))
+                                            
+                                            load_master_instruments.clear()
+                                            load_all_data.clear()
+                                            
+                                            if success: st.success(f"✅ {mf_name} ditambahkan!")
+                                            else: st.warning(f"⚠️ {mf_name} tersimpan, historis kosong.")
+                                            time.sleep(1)
+                                            st.rerun()
+                                            break
+                                        else:
+                                            if attempt < max_retries - 1:
+                                                st.warning(f"⚠️ Percobaan {attempt + 1} gagal. Mengulang...")
+                                                time.sleep(5)
+                                            else: st.error("❌ Ticker tidak ditemukan!")
+                                    else:
+                                        if attempt < max_retries - 1: time.sleep(5)
+                                        else: st.error("❌ Gagal terhubung ke API Refinitiv.")
+                                except Exception as e:
+                                    if attempt < max_retries - 1: time.sleep(5)
+                                    else: st.error(f"❌ Gagal total: {e}")
+                    else: st.warning("Isi Ticker dan Nama!")
+    
+        # 2. FORM OBLIGASI NEGARA
+        with tab_bond:
+            with st.form("form_add_bond"):
+                bond_isin = st.text_input("ISIN Code / Ticker", placeholder="Contoh: IDFR0100=")
+                bond_name = st.text_input("Nama Obligasi", placeholder="Contoh: FR100")
+                bond_curr = st.selectbox("Mata Uang", ["IDR", "USD"], key="bd_c")
+                bond_release_date = st.date_input("Tanggal Rilis Obligasi", value=dt.date(2024, 1, 1))
+                
+                if st.form_submit_button("Tambah & Tarik Data"):
+                    if bond_isin and bond_name:
+                        with st.spinner("Menarik Historis Obligasi..."):
+                            if not st.session_state.connected:
+                                st.session_state.connected = init_refinitiv_session()
+                                
+                            if st.session_state.connected:
+                                supabase.table("gov_bonds_instruments").upsert([{"isin_code": bond_isin, "name": bond_name, "currency": bond_curr}]).execute()
+                                
+                                # Inject Start Date dinamis
+                                success = backfill_new_instrument("gov_bonds_prices_daily", "isin_code", bond_isin, ['TR.ASKPRICE.date', 'TR.ASKPRICE', 'TR.BIDYIELD'], ["ask_price", "ask_yield"], {'Instrument': 'isin_code', 'Date': 'date', 'Ask Price': 'ask_price', 'Bid Yield': 'ask_yield', 'TR.ASKPRICE.date': 'date', 'TR.ASKPRICE': 'ask_price', 'TR.BIDYIELD': 'ask_yield'}, start_date_str=bond_release_date.strftime('%Y-%m-%d'))
+                                
+                                load_master_instruments.clear()
+                                load_all_data.clear()
+                                
+                                if success: st.success("✅ Obligasi ditambahkan!")
+                                else: st.warning("⚠️ Obligasi ditambahkan, historis kosong.")
+                                time.sleep(1)
+                                st.rerun()
+                            else: st.error("❌ Gagal terhubung ke API Refinitiv.")
+                    else: st.warning("Isi ISIN dan Nama!")
+    
+        # 3. FORM MAKRO
+        with tab_macro:
+            with st.form("form_add_macro"):
+                mac_ticker = st.text_input("Ticker Makro", placeholder="Contoh: .JKSE")
+                mac_name = st.text_input("Nama Makro", placeholder="Contoh: IHSG")
+                mac_cat = st.selectbox("Kategori", ["Index", "Interest Rate", "Currency", "Commodity"])
+                mac_metric = st.selectbox("Metric Type API", ["Price Close", "Close Price", "America Close Bid Price"])
+                
+                if st.form_submit_button("Tambah & Backfill 25 Thn"):
+                    if mac_ticker and mac_name:
+                        with st.spinner("Menarik Historis Makro (25 Tahun)..."):
+                            if not st.session_state.connected:
+                                st.session_state.connected = init_refinitiv_session()
+                                
+                            if st.session_state.connected:
+                                supabase.table("macro_instruments").upsert([
+                                    {"ticker": mac_ticker, "name": mac_name, "category": mac_cat, "metric_type": mac_metric}
+                                ]).execute()
+                                
+                                field_code = "TR.PriceClose" if mac_metric == "Price Close" else ("TR.AmericaCloseBidPrice" if mac_metric == "America Close Bid Price" else "TR.ClosePrice")
+                                
+                                # Makro menggunakan hardcode 2000-01-01
+                                success = backfill_new_instrument("macro_daily", "ticker", mac_ticker, [f"{field_code}.date", field_code], ["value"], {'Instrument': 'ticker', 'Date': 'date', f'{field_code}.date': 'date', field_code: 'value', 'Price Close': 'value', 'Close Price': 'value', 'America Close Bid Price': 'value', 'cLOSE Price': 'value'}, start_date_str="2000-01-01")
+                                
+                                load_master_instruments.clear()
+                                load_all_data.clear()
+                                
+                                if success: st.success("✅ Makro ditambahkan!")
+                                else: st.warning("⚠️ Makro ditambahkan, historis kosong.")
+                                time.sleep(1)
+                                st.rerun()
+                            else: st.error("❌ Gagal terhubung ke API Refinitiv.")
+                    else: st.warning("Lengkapi data makro!")
+    
+        # 4. FORM HAPUS (DELETE)
+        with tab_del:
+            mf_master, bond_master, macro_master = load_master_instruments()
+            
+            # PERBAIKAN 2: Mendaftarkan target tabel harian ke dalam tuple untuk Cascade Delete
+            all_del_opts = {f"MF: {x['name']}": ("mf_instruments", "ticker", x['ticker'], "mf_nav_daily") for x in mf_master}
+            all_del_opts.update({f"Bond: {x['name']}": ("gov_bonds_instruments", "isin_code", x['isin_code'], "gov_bonds_prices_daily") for x in bond_master})
+            all_del_opts.update({f"Macro: {x['name']}": ("macro_instruments", "ticker", x['ticker'], "macro_daily") for x in macro_master})
+            
+            if all_del_opts:
+                sel_del = st.selectbox("Pilih Instrumen untuk Dihapus:", list(all_del_opts.keys()))
+                if st.button("🗑️ Hapus Instrumen & Riwayat", type="secondary"):
+                    t_master, col_name, val_id, t_daily = all_del_opts[sel_del]
+                    
+                    with st.spinner(f"Menghapus {sel_del} secara permanen..."):
+                        # 1. Hapus Ribuan Data Historis di Tabel Harian
+                        supabase.table(t_daily).delete().eq(col_name, val_id).execute()
                         
-                        # --- TAMBAHKAN BARIS INI ---
-                        load_all_data.clear() 
-                        # ---------------------------
+                        # 2. Hapus Identitas di Tabel Master
+                        supabase.table(t_master).delete().eq(col_name, val_id).execute()
                         
-                        st.success("Berhasil diupdate!")
+                        # 3. Bakar Cache
+                        load_master_instruments.clear()
+                        load_all_data.clear()
+                        
+                        st.success(f"Berhasil dihapus dari master data beserta seluruh riwayat hariannya.")
                         time.sleep(1.5)
                         st.rerun()
-                    except Exception as e:
-                        st.error(f"❌ Update Gagal: {e}")
-                
-    
-    # Manajemen Produk Kustom (hanya untuk IDR)
-   # ==========================================
-    # MANAJEMEN INSTRUMEN (CRUD & AUTO-BACKFILL)
-    # ==========================================
-    st.subheader("⚙️ Database Instrumen (CRUD)")
-    
-    tab_mf, tab_bond, tab_macro, tab_del = st.tabs(["Reksa Dana", "Obligasi", "Makro", "Hapus"])
-    # 1. FORM REKSA DANA
-    with tab_mf:
-        with st.form("form_add_mf"):
-            mf_ticker = st.text_input("Ticker (LP...)", placeholder="Contoh: LP68059065")
-            mf_name = st.text_input("Nama Reksa Dana")
-            mf_type = st.selectbox("Fund Type", ["Equity", "Fixed Income"])
-            mf_curr = st.selectbox("Mata Uang", ["IDR", "USD"], key="mf_c")
-            mf_release_date = st.date_input("Tanggal Rilis Produk", value=dt.date(2024, 1, 1), help="Sistem akan menarik data mulai dari tanggal ini.")
-            
-            if st.form_submit_button("Tambah & Tarik Data"):
-                if mf_ticker and mf_name:
-                    with st.spinner(f"Menarik Historis dari {mf_release_date.strftime('%Y')}..."):
-                        max_retries = 3
-                        for attempt in range(max_retries):
-                            try:
-                                if not st.session_state.connected:
-                                    st.session_state.connected = init_refinitiv_session()
-                                    
-                                if st.session_state.connected:
-                                    if validate_ticker(mf_ticker, "MF"):
-                                        supabase.table("mf_instruments").upsert([{"ticker": mf_ticker, "name": mf_name, "fund_type": mf_type, "currency": mf_curr}]).execute()
-                                        
-                                        # Inject Start Date dinamis
-                                        success = backfill_new_instrument("mf_nav_daily", "ticker", mf_ticker, ['TR.NETASSETVAL.date', 'TR.NETASSETVAL'], ["nav"], {'Instrument': 'ticker', 'Date': 'date', 'TR.NETASSETVAL.date': 'date', 'TR.NETASSETVAL': 'nav', 'Net Asset Value': 'nav'}, start_date_str=mf_release_date.strftime('%Y-%m-%d'))
-                                        
-                                        load_master_instruments.clear()
-                                        load_all_data.clear()
-                                        
-                                        if success: st.success(f"✅ {mf_name} ditambahkan!")
-                                        else: st.warning(f"⚠️ {mf_name} tersimpan, historis kosong.")
-                                        time.sleep(1)
-                                        st.rerun()
-                                        break
-                                    else:
-                                        if attempt < max_retries - 1:
-                                            st.warning(f"⚠️ Percobaan {attempt + 1} gagal. Mengulang...")
-                                            time.sleep(5)
-                                        else: st.error("❌ Ticker tidak ditemukan!")
-                                else:
-                                    if attempt < max_retries - 1: time.sleep(5)
-                                    else: st.error("❌ Gagal terhubung ke API Refinitiv.")
-                            except Exception as e:
-                                if attempt < max_retries - 1: time.sleep(5)
-                                else: st.error(f"❌ Gagal total: {e}")
-                else: st.warning("Isi Ticker dan Nama!")
-
-    # 2. FORM OBLIGASI NEGARA
-    with tab_bond:
-        with st.form("form_add_bond"):
-            bond_isin = st.text_input("ISIN Code / Ticker", placeholder="Contoh: IDFR0100=")
-            bond_name = st.text_input("Nama Obligasi", placeholder="Contoh: FR100")
-            bond_curr = st.selectbox("Mata Uang", ["IDR", "USD"], key="bd_c")
-            bond_release_date = st.date_input("Tanggal Rilis Obligasi", value=dt.date(2024, 1, 1))
-            
-            if st.form_submit_button("Tambah & Tarik Data"):
-                if bond_isin and bond_name:
-                    with st.spinner("Menarik Historis Obligasi..."):
-                        if not st.session_state.connected:
-                            st.session_state.connected = init_refinitiv_session()
-                            
-                        if st.session_state.connected:
-                            supabase.table("gov_bonds_instruments").upsert([{"isin_code": bond_isin, "name": bond_name, "currency": bond_curr}]).execute()
-                            
-                            # Inject Start Date dinamis
-                            success = backfill_new_instrument("gov_bonds_prices_daily", "isin_code", bond_isin, ['TR.ASKPRICE.date', 'TR.ASKPRICE', 'TR.BIDYIELD'], ["ask_price", "ask_yield"], {'Instrument': 'isin_code', 'Date': 'date', 'Ask Price': 'ask_price', 'Bid Yield': 'ask_yield', 'TR.ASKPRICE.date': 'date', 'TR.ASKPRICE': 'ask_price', 'TR.BIDYIELD': 'ask_yield'}, start_date_str=bond_release_date.strftime('%Y-%m-%d'))
-                            
-                            load_master_instruments.clear()
-                            load_all_data.clear()
-                            
-                            if success: st.success("✅ Obligasi ditambahkan!")
-                            else: st.warning("⚠️ Obligasi ditambahkan, historis kosong.")
-                            time.sleep(1)
-                            st.rerun()
-                        else: st.error("❌ Gagal terhubung ke API Refinitiv.")
-                else: st.warning("Isi ISIN dan Nama!")
-
-    # 3. FORM MAKRO
-    with tab_macro:
-        with st.form("form_add_macro"):
-            mac_ticker = st.text_input("Ticker Makro", placeholder="Contoh: .JKSE")
-            mac_name = st.text_input("Nama Makro", placeholder="Contoh: IHSG")
-            mac_cat = st.selectbox("Kategori", ["Index", "Interest Rate", "Currency", "Commodity"])
-            mac_metric = st.selectbox("Metric Type API", ["Price Close", "Close Price", "America Close Bid Price"])
-            
-            if st.form_submit_button("Tambah & Backfill 25 Thn"):
-                if mac_ticker and mac_name:
-                    with st.spinner("Menarik Historis Makro (25 Tahun)..."):
-                        if not st.session_state.connected:
-                            st.session_state.connected = init_refinitiv_session()
-                            
-                        if st.session_state.connected:
-                            supabase.table("macro_instruments").upsert([
-                                {"ticker": mac_ticker, "name": mac_name, "category": mac_cat, "metric_type": mac_metric}
-                            ]).execute()
-                            
-                            field_code = "TR.PriceClose" if mac_metric == "Price Close" else ("TR.AmericaCloseBidPrice" if mac_metric == "America Close Bid Price" else "TR.ClosePrice")
-                            
-                            # Makro menggunakan hardcode 2000-01-01
-                            success = backfill_new_instrument("macro_daily", "ticker", mac_ticker, [f"{field_code}.date", field_code], ["value"], {'Instrument': 'ticker', 'Date': 'date', f'{field_code}.date': 'date', field_code: 'value', 'Price Close': 'value', 'Close Price': 'value', 'America Close Bid Price': 'value', 'cLOSE Price': 'value'}, start_date_str="2000-01-01")
-                            
-                            load_master_instruments.clear()
-                            load_all_data.clear()
-                            
-                            if success: st.success("✅ Makro ditambahkan!")
-                            else: st.warning("⚠️ Makro ditambahkan, historis kosong.")
-                            time.sleep(1)
-                            st.rerun()
-                        else: st.error("❌ Gagal terhubung ke API Refinitiv.")
-                else: st.warning("Lengkapi data makro!")
-
-    # 4. FORM HAPUS (DELETE)
-    with tab_del:
-        mf_master, bond_master, macro_master = load_master_instruments()
-        
-        # PERBAIKAN 2: Mendaftarkan target tabel harian ke dalam tuple untuk Cascade Delete
-        all_del_opts = {f"MF: {x['name']}": ("mf_instruments", "ticker", x['ticker'], "mf_nav_daily") for x in mf_master}
-        all_del_opts.update({f"Bond: {x['name']}": ("gov_bonds_instruments", "isin_code", x['isin_code'], "gov_bonds_prices_daily") for x in bond_master})
-        all_del_opts.update({f"Macro: {x['name']}": ("macro_instruments", "ticker", x['ticker'], "macro_daily") for x in macro_master})
-        
-        if all_del_opts:
-            sel_del = st.selectbox("Pilih Instrumen untuk Dihapus:", list(all_del_opts.keys()))
-            if st.button("🗑️ Hapus Instrumen & Riwayat", type="secondary"):
-                t_master, col_name, val_id, t_daily = all_del_opts[sel_del]
-                
-                with st.spinner(f"Menghapus {sel_del} secara permanen..."):
-                    # 1. Hapus Ribuan Data Historis di Tabel Harian
-                    supabase.table(t_daily).delete().eq(col_name, val_id).execute()
-                    
-                    # 2. Hapus Identitas di Tabel Master
-                    supabase.table(t_master).delete().eq(col_name, val_id).execute()
-                    
-                    # 3. Bakar Cache
-                    load_master_instruments.clear()
-                    load_all_data.clear()
-                    
-                    st.success(f"Berhasil dihapus dari master data beserta seluruh riwayat hariannya.")
-                    time.sleep(1.5)
-                    st.rerun()
-        else:
-            st.info("Database instrumen kosong.")
+            else:
+                st.info("Database instrumen kosong.")
     
     
     # ==========================================
@@ -1499,6 +1521,61 @@ def render_main_dashboard():
                     use_container_width=True
                 )
                 st.divider()
+
+        # --- TAMBAHAN: TABEL REVERSAL NAIK & TURUN ---
+        st.subheader("🔄 Reversal Harian Seluruh Reksadana (Naik & Turun)")
+        st.caption("Menampilkan seluruh reksadana (Equity & Fixed Income) yang mengalami pembalikan arah tren harian.")
+        
+        if not df_all_instruments.empty and len(df_all_instruments) >= 3:
+            df_recent = df_all_instruments.tail(3)
+            ret_recent = df_recent.pct_change().dropna()
+            
+            if len(ret_recent) >= 2:
+                ret_yesterday = ret_recent.iloc[-2]
+                ret_today = ret_recent.iloc[-1]
+                
+                mask_naik = (ret_yesterday < 0) & (ret_today > 0)
+                reversal_naik_cols = mask_naik[mask_naik].index.tolist()
+                
+                mask_turun = (ret_yesterday > 0) & (ret_today < 0)
+                reversal_turun_cols = mask_turun[mask_turun].index.tolist()
+                
+                col_rev1, col_rev2 = st.columns(2)
+                
+                with col_rev1:
+                    st.markdown("**🟢 Reversal Naik**")
+                    if reversal_naik_cols:
+                        df_rev_naik = pd.DataFrame({
+                            "Nama Instrumen": reversal_naik_cols,
+                            "Return Kemarin": ret_yesterday[reversal_naik_cols].values,
+                            "Return Hari Ini": ret_today[reversal_naik_cols].values
+                        }).sort_values("Return Hari Ini", ascending=False)
+                        df_rev_naik["Return Kemarin"] = (df_rev_naik["Return Kemarin"] * 100).round(2).astype(str) + "%"
+                        df_rev_naik["Return Hari Ini"] = (df_rev_naik["Return Hari Ini"] * 100).round(2).astype(str) + "%"
+                        st.dataframe(df_rev_naik, hide_index=True, use_container_width=True)
+                    else:
+                        st.info("Tidak ada produk yang mengalami reversal naik.")
+                        
+                with col_rev2:
+                    st.markdown("**🔴 Reversal Turun**")
+                    if reversal_turun_cols:
+                        df_rev_turun = pd.DataFrame({
+                            "Nama Instrumen": reversal_turun_cols,
+                            "Return Kemarin": ret_yesterday[reversal_turun_cols].values,
+                            "Return Hari Ini": ret_today[reversal_turun_cols].values
+                        }).sort_values("Return Hari Ini", ascending=True)
+                        df_rev_turun["Return Kemarin"] = (df_rev_turun["Return Kemarin"] * 100).round(2).astype(str) + "%"
+                        df_rev_turun["Return Hari Ini"] = (df_rev_turun["Return Hari Ini"] * 100).round(2).astype(str) + "%"
+                        st.dataframe(df_rev_turun, hide_index=True, use_container_width=True)
+                    else:
+                        st.info("Tidak ada produk yang mengalami reversal turun.")
+            else:
+                st.warning("Data hari bursa aktif tidak mencukupi untuk menghitung reversal.")
+        else:
+            st.warning("Data tidak mencukupi untuk menghitung reversal.")
+            
+        st.divider()
+
         st.subheader(f"📈 Tren Pasar: {selected_benchmark_label}")
         if not benchmark_series_sliced.empty:
             # Kalkulasi persentase perubahan dari awal periode untuk keterangan tambahan
