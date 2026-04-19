@@ -21,10 +21,10 @@ def init_supabase() -> Client:
         key: str = st.secrets["supabase"]["key"]
         return create_client(url, key)
     except KeyError as e:
-        st.error(f"❌ Kredensial Supabase tidak ditemukan di secrets.toml: missing {e}")
+        st.error(f"Kredensial Supabase tidak ditemukan di secrets.toml: missing {e}")
         st.stop()
     except Exception as e:
-        st.error(f"❌ Gagal menginisialisasi klien Supabase: {e}")
+        st.error(f"Gagal menginisialisasi klien Supabase: {e}")
         st.stop()
 
 # Eksekusi pembuatan klien dan simpan di memori global
@@ -99,7 +99,7 @@ def fetch_from_supabase(table_name, id_col, tickers, start_date, end_date):
                 else:
                     # Ubah menjadi warning agar aplikasi tidak crash dan tetap 
                     # melanjutkan kalkulasi dengan sisa 58.000 data yang berhasil ditarik
-                    st.warning(f"⚠️ Penarikan {table_name} dihentikan pada data ke-{offset} karena pembatasan server (Rate Limit). Melanjutkan dengan data yang ada...")
+                    st.warning(f"Penarikan {table_name} dihentikan pada data ke-{offset} karena pembatasan server (Rate Limit). Melanjutkan dengan data yang ada...")
         
         if not success:
             break 
@@ -142,7 +142,7 @@ def init_refinitiv_session(silent=False):
         return True
     except Exception as e:
         if not silent:
-            st.error(f"❌ Gagal membuka sesi Refinitiv: {e}")
+            st.error(f"Gagal membuka sesi Refinitiv: {e}")
         else:
             print(f"Gagal membuka sesi Refinitiv (CRON): {e}")
         return False
@@ -216,7 +216,7 @@ def backfill_new_instrument(table_dest, id_col, ticker, fields, value_cols, rena
     try:
         df_raw = rd.get_data(universe=[ticker], fields=fields, parameters=params)
     except Exception as e:
-        st.error(f"❌ Refinitiv Error: {e}")
+        st.error(f"Refinitiv Error: {e}")
         return False
 
     if df_raw is None or df_raw.empty:
@@ -319,7 +319,7 @@ start_cron_job()
 # ==================== KONFIGURASI HALAMAN ====================
 st.set_page_config(
     page_title="Investment Dashboard - Reksa Dana Indonesia",
-    page_icon="📈",
+    page_icon="",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -336,11 +336,11 @@ if 'is_admin' not in st.session_state:
 
 try:
     pg = st.navigation([
-        st.Page(set_admin_false, title="Umum", url_path="/"),
-        st.Page(set_admin_true, title="Admin", url_path="/AsepKnalpot")
+        st.Page(set_admin_false, title="Umum", url_path="umum"),
+        st.Page(set_admin_true, title="Admin", url_path="AsepKnalpot")
     ], position="hidden")
     pg.run()
-except Exception:
+except Exception as e:
     pass
 
 # ==================== FUNGSI HELPER UNTUK LOADING DATA (DB ONLY) ====================
@@ -418,7 +418,7 @@ def load_all_data(start_date, end_date, currency='IDR'):
         df_komoditas_wide = safe_pivot(df_komo_sub, 'ticker', 'value')
 
     if df_equity_wide.empty:
-        st.warning("⚠️ Data Equity kosong di database untuk mata uang ini.")
+        st.warning("Data Equity kosong di database untuk mata uang ini.")
         # Mengembalikan dictionary kosong dengan dataframe kosong agar tidak merusak logika selanjutnya
         return {
             'equity': df_equity_wide, 'bond': df_bond_wide,
@@ -599,20 +599,20 @@ def calculate_metrics(price_data, benchmark_series, risk_free_rate, eval_window=
         # KARANTINA VALUASI UNTUK PRODUK MUDA
         if young_funds_list is not None and col in young_funds_list:
             z_score[col] = np.nan
-            status_valuasi[col] = "⚠️ Data Terbatas"
+            status_valuasi[col] = "Data Terbatas"
             skor_valuasi[col] = np.nan 
             continue
             
         if std_price[col] != 0 and not pd.isna(std_price[col]):
             z_val = (price_data_risk[col].iloc[-1] - mean_price[col]) / std_price[col]
             z_score[col] = z_val
-            if z_val >= 3.0: status_valuasi[col] = "🔴 Sangat Mahal"
-            elif z_val <= -3.0: status_valuasi[col] = "🟢 Sangat Murah"
-            elif z_val < 3.0 and z_val >= 2.0: status_valuasi[col] = "🔴 Mahal"
-            elif z_val > -3.0 and z_val <= -2.0: status_valuasi[col] = "🟢 Murah"
-            elif z_val < 2.0 and z_val >= 1.0: status_valuasi[col] = "🟠 Sedikit Mahal"
-            elif z_val > -2.0 and z_val <= -1.0: status_valuasi[col] = "🟢 Sedikit Murah"
-            elif z_val < 1.0 and z_val >= -1.0: status_valuasi[col] = "⚪ Fair Price"
+            if z_val >= 3.0: status_valuasi[col] = "Sangat Mahal"
+            elif z_val <= -3.0: status_valuasi[col] = "Sangat Murah"
+            elif z_val < 3.0 and z_val >= 2.0: status_valuasi[col] = "Mahal"
+            elif z_val > -3.0 and z_val <= -2.0: status_valuasi[col] = "Murah"
+            elif z_val < 2.0 and z_val >= 1.0: status_valuasi[col] = "Sedikit Mahal"
+            elif z_val > -2.0 and z_val <= -1.0: status_valuasi[col] = "Sedikit Murah"
+            elif z_val < 1.0 and z_val >= -1.0: status_valuasi[col] = "Fair Price"
             else: status_valuasi[col] = "" 
                 
             if z_val > 3.0: skor_valuasi[col] = (1/8) * num_products
@@ -968,10 +968,10 @@ if 'custom_bond' not in st.session_state:
     
 # ==================== SIDEBAR ====================
 with st.sidebar:
-    st.title("⚙️ Pengaturan")
+    st.title("Pengaturan")
     st.sidebar.divider()
     # Pilihan mata uang reksa dana
-    st.subheader("💱 Mata Uang Reksa Dana")
+    st.subheader("Mata Uang Reksa Dana")
     new_currency = st.radio(
         "Pilih Mata Uang",
         options=["IDR", "USD"],
@@ -990,19 +990,19 @@ with st.sidebar:
         # ==========================================
         # BLOK KONEKSI & SINKRONISASI DATA
         # ==========================================
-        st.subheader("🔄 Koneksi & Update Data")
+        st.subheader("Koneksi & Update Data")
         
         # Indikator Status Koneksi API
         if st.session_state.connected:
-            st.success("✅ Terhubung ke API Refinitiv")
+            st.success("Terhubung ke API Refinitiv")
         else:
-            st.warning("⚠️ API Refinitiv Belum Terhubung")
+            st.warning("API Refinitiv Belum Terhubung")
     
         col_btn1, col_btn2 = st.columns(2)
         
         with col_btn1:
             # 1. TOMBOL KONEKSI
-            if st.button("🔌 Connect", use_container_width=True):
+            if st.button("Connect", use_container_width=True):
                 with st.spinner("Menghubungkan..."):
                     if init_refinitiv_session():
                         st.session_state.connected = True
@@ -1012,13 +1012,13 @@ with st.sidebar:
                         
         with col_btn2:
             # 2. TOMBOL UPDATE DATA (Aktif hanya jika sudah connect)
-            if st.button("📥 Update", type="primary", use_container_width=True, disabled=not st.session_state.connected):
+            if st.button("Update", type="primary", use_container_width=True, disabled=not st.session_state.connected):
                 with st.spinner("Mengecek data tertinggal..."):
                     start_d = get_sync_start_date() 
                     end_d = dt.datetime.today().date()
                     
                     if start_d >= end_d:
-                        st.info("✅ Database sudah mutakhir.")
+                        st.info("Database sudah mutakhir.")
                     else:
                         st.write(f"Menarik: **{start_d.strftime('%d/%m/%y')}** - **{end_d.strftime('%d/%m/%y')}**")
                         try:
@@ -1033,7 +1033,7 @@ with st.sidebar:
                             time.sleep(1.5)
                             st.rerun()
                         except Exception as e:
-                            st.error(f"❌ Update Gagal: {e}")
+                            st.error(f"Update Gagal: {e}")
                     
         
         # Manajemen Produk Kustom (hanya untuk IDR)
@@ -1042,7 +1042,7 @@ with st.sidebar:
         # ==========================================
         # MANAJEMEN INSTRUMEN (CRUD & AUTO-BACKFILL)
         # ==========================================
-        st.subheader("⚙️ Database Instrumen (CRUD)")
+        st.subheader("Database Instrumen (CRUD)")
         
         tab_mf, tab_bond, tab_macro, tab_del = st.tabs(["Reksa Dana", "Obligasi", "Makro", "Hapus"])
         # 1. FORM REKSA DANA
@@ -1073,22 +1073,22 @@ with st.sidebar:
                                             load_master_instruments.clear()
                                             load_all_data.clear()
                                             
-                                            if success: st.success(f"✅ {mf_name} ditambahkan!")
-                                            else: st.warning(f"⚠️ {mf_name} tersimpan, historis kosong.")
+                                            if success: st.success(f"{mf_name} ditambahkan!")
+                                            else: st.warning(f"{mf_name} tersimpan, historis kosong.")
                                             time.sleep(1)
                                             st.rerun()
                                             break
                                         else:
                                             if attempt < max_retries - 1:
-                                                st.warning(f"⚠️ Percobaan {attempt + 1} gagal. Mengulang...")
+                                                st.warning(f"Percobaan {attempt + 1} gagal. Mengulang...")
                                                 time.sleep(5)
-                                            else: st.error("❌ Ticker tidak ditemukan!")
+                                            else: st.error("Ticker tidak ditemukan!")
                                     else:
                                         if attempt < max_retries - 1: time.sleep(5)
-                                        else: st.error("❌ Gagal terhubung ke API Refinitiv.")
+                                        else: st.error("Gagal terhubung ke API Refinitiv.")
                                 except Exception as e:
                                     if attempt < max_retries - 1: time.sleep(5)
-                                    else: st.error(f"❌ Gagal total: {e}")
+                                    else: st.error(f"Gagal total: {e}")
                     else: st.warning("Isi Ticker dan Nama!")
     
         # 2. FORM OBLIGASI NEGARA
@@ -1114,11 +1114,11 @@ with st.sidebar:
                                 load_master_instruments.clear()
                                 load_all_data.clear()
                                 
-                                if success: st.success("✅ Obligasi ditambahkan!")
-                                else: st.warning("⚠️ Obligasi ditambahkan, historis kosong.")
+                                if success: st.success("Obligasi ditambahkan!")
+                                else: st.warning("Obligasi ditambahkan, historis kosong.")
                                 time.sleep(1)
                                 st.rerun()
-                            else: st.error("❌ Gagal terhubung ke API Refinitiv.")
+                            else: st.error("Gagal terhubung ke API Refinitiv.")
                     else: st.warning("Isi ISIN dan Nama!")
     
         # 3. FORM MAKRO
@@ -1148,11 +1148,11 @@ with st.sidebar:
                                 load_master_instruments.clear()
                                 load_all_data.clear()
                                 
-                                if success: st.success("✅ Makro ditambahkan!")
-                                else: st.warning("⚠️ Makro ditambahkan, historis kosong.")
+                                if success: st.success("Makro ditambahkan!")
+                                else: st.warning("Makro ditambahkan, historis kosong.")
                                 time.sleep(1)
                                 st.rerun()
-                            else: st.error("❌ Gagal terhubung ke API Refinitiv.")
+                            else: st.error("Gagal terhubung ke API Refinitiv.")
                     else: st.warning("Lengkapi data makro!")
     
         # 4. FORM HAPUS (DELETE)
@@ -1166,7 +1166,7 @@ with st.sidebar:
             
             if all_del_opts:
                 sel_del = st.selectbox("Pilih Instrumen untuk Dihapus:", list(all_del_opts.keys()))
-                if st.button("🗑️ Hapus Instrumen & Riwayat", type="secondary"):
+                if st.button("Hapus Instrumen & Riwayat", type="secondary"):
                     t_master, col_name, val_id, t_daily = all_del_opts[sel_del]
                     
                     with st.spinner(f"Menghapus {sel_del} secara permanen..."):
@@ -1194,7 +1194,7 @@ with st.sidebar:
         fetched_start = pd.to_datetime(st.session_state.start_date).date()
         fetched_end = pd.to_datetime(st.session_state.end_date).date()
         
-        st.subheader("✂️ Cut-off Data Analisis")
+        st.subheader("Cut-off Data Analisis")
         st.caption("Batasi rentang historis untuk komputasi metrik.")
         
         # Tambahkan batas eksplisit agar bisa memilih tahun 2000 ke atas
@@ -1216,7 +1216,7 @@ with st.sidebar:
             
         st.info(f"Aktif: **{analysis_start_date.strftime('%d/%m/%y')}** - **{analysis_end_date.strftime('%d/%m/%y')}**")
 
-        st.subheader("⏱️ Parameter Kalkulasi")
+        st.subheader("Parameter Kalkulasi")
         # UBAH: Tambahkan opsi 3 Tahun dan 5 Tahun
         date_option = st.selectbox("Interval Rolling:", ["1 Bulan", "3 Bulan", "6 Bulan", "1 Tahun"], index=3, key="interval_analisis")
         
@@ -1248,7 +1248,7 @@ with st.sidebar:
 # ==================== HALAMAN UTAMA ====================
 @st.fragment(run_every='30m')
 def render_main_dashboard():
-    st.title("📊 Investment Dashboard - Reksa Dana Indonesia")
+    st.title("Investment Dashboard - Reksa Dana Indonesia")
     try:
         display_start = analysis_start_date
         display_end = analysis_end_date
@@ -1280,7 +1280,7 @@ def render_main_dashboard():
 
     if latest_dates:
         latest_update = max(latest_dates)
-        st.caption(f"🔄 **Latest Updated Data:** {latest_update.strftime('%d %b %Y')}")
+        st.caption(f"**Latest Updated Data:** {latest_update.strftime('%d %b %Y')}")
 
     # --- DETEKSI REKSA DANA MUDA (< 1 TAHUN / < 252 Hari Bursa) ---
     # --- DETEKSI REKSA DANA MUDA (< 1 TAHUN KALENDER DARI DATABASE) ---
@@ -1429,19 +1429,19 @@ def render_main_dashboard():
 
     # ==================== TABS ====================
     tab_overview, tab_leaderboard_split,  tab_performance, tab_correlation, tab_compare, tab_gov_bonds = st.tabs([
-        "📋 Ringkasan", 
-        "🏆 Leaderboard", 
-        "📊 Performa & Ranking", 
-        "📈 Korelasi",  
-        "📉 Perbandingan Historis",
-        "🏛️ Obligasi Negara",
-        #"💡 Rekomendasi", tab_recommendation 
+        "Ringkasan", 
+        "Leaderboard", 
+        "Performa & Ranking", 
+        "Korelasi",  
+        "Perbandingan Historis",
+        "Obligasi Negara",
+        #"Rekomendasi", tab_recommendation 
     ])
 
     # --- Tab 1: Ringkasan ---
     with tab_overview:
         st.header("Ringkasan Pasar & Instrumen")
-        st.info("ℹ️ Metodologi: Peringkat Top 10 dihitung menggunakan model pembobotan komposit rata masing-masing 20%: Total Return, Sharpe Ratio, Alpha, Beta, dan Volatility. Dihitung secara kumulatif dari awal periode kalender yang dipilih hingga hari ini.")
+        st.info("Metodologi: Peringkat Top 10 dihitung menggunakan model pembobotan komposit rata masing-masing 20%: Total Return, Sharpe Ratio, Alpha, Beta, dan Volatility. Dihitung secara kumulatif dari awal periode kalender yang dipilih hingga hari ini.")
         col1, col2, col3, col4 = st.columns(4)
         with col1:
             st.metric("Jumlah Equity", len(df_equity.columns))
@@ -1491,7 +1491,7 @@ def render_main_dashboard():
 
         if young_list_to_show and metrics_to_show is not None:
             st.divider()
-            st.warning(f"⚠️ Terdapat **{len(young_list_to_show)} {top10_category}** yang umur nya tidak selama interval data.")
+            st.warning(f"Terdapat **{len(young_list_to_show)} {top10_category}** yang umur nya tidak selama interval data.")
             st.caption(f"Instrumen ini dianulir dari evaluasi Skor Komposit Risiko, namun diperingkat secara independen di bawah ini murni berdasarkan kinerja profit absolut pada interval analisis **{date_option}**.")
         
             # Ekstrak metrik khusus untuk produk muda
@@ -1523,7 +1523,7 @@ def render_main_dashboard():
                 st.divider()
 
         # --- TAMBAHAN: TABEL REVERSAL NAIK & TURUN ---
-        st.subheader("🔄 Reversal Harian Seluruh Reksadana (Naik & Turun)")
+        st.subheader("Reversal Harian Seluruh Reksadana (Naik & Turun)")
         st.caption("Menampilkan seluruh reksadana (Equity & Fixed Income) yang mengalami pembalikan arah tren harian.")
         
         if not df_all_instruments.empty and len(df_all_instruments) >= 3:
@@ -1543,7 +1543,7 @@ def render_main_dashboard():
                 col_rev1, col_rev2 = st.columns(2)
                 
                 with col_rev1:
-                    st.markdown("**🟢 Reversal Naik**")
+                    st.markdown("**Reversal Naik**")
                     if reversal_naik_cols:
                         df_rev_naik = pd.DataFrame({
                             "Nama Instrumen": reversal_naik_cols,
@@ -1557,7 +1557,7 @@ def render_main_dashboard():
                         st.info("Tidak ada produk yang mengalami reversal naik.")
                         
                 with col_rev2:
-                    st.markdown("**🔴 Reversal Turun**")
+                    st.markdown("**Reversal Turun**")
                     if reversal_turun_cols:
                         df_rev_turun = pd.DataFrame({
                             "Nama Instrumen": reversal_turun_cols,
@@ -1576,7 +1576,7 @@ def render_main_dashboard():
             
         st.divider()
 
-        st.subheader(f"📈 Tren Pasar: {selected_benchmark_label}")
+        st.subheader(f"Tren Pasar: {selected_benchmark_label}")
         if not benchmark_series_sliced.empty:
             # Kalkulasi persentase perubahan dari awal periode untuk keterangan tambahan
             bench_start_val = benchmark_series_sliced.iloc[0]
@@ -1611,8 +1611,8 @@ def render_main_dashboard():
 
     # ==================== TAB 2: LEADERBOARD ====================
     with tab_leaderboard_split:
-        st.header("🏆 Leaderboard & Rekomendasi Produk")
-        st.info("ℹ️ **Metodologi:** Berfungsi sebagai indikator *Momentum*. Peringkat diukur murni berdasarkan **Return Absolut 5 Hari Kalender** ((Harga Hari Ini / Harga 5 Hari Lalu) - 1). Mengabaikan risiko dan volatilitas untuk mencari aset dengan tren naik jangka pendek tercepat.")
+        st.header("Leaderboard & Rekomendasi Produk")
+        st.info("**Metodologi:** Berfungsi sebagai indikator *Momentum*. Peringkat diukur murni berdasarkan **Return Absolut 5 Hari Kalender** ((Harga Hari Ini / Harga 5 Hari Lalu) - 1). Mengabaikan risiko dan volatilitas untuk mencari aset dengan tren naik jangka pendek tercepat.")
         lb_type = st.radio("Pilih Tipe Leaderboard", ["Equity", "Fixed Income"], horizontal=True, key="lb_split_type")
         if lb_type == "Equity":
             df_lb_full = df_equity_full.drop(columns=[x for x in young_all if x in df_equity_full.columns], errors='ignore')
@@ -1626,7 +1626,7 @@ def render_main_dashboard():
             leaderboard = calculate_daily_leaderboard(df_lb_full, days=5)
             if not leaderboard.empty:
                 leaderboard['Change_Color'] = leaderboard['Rank_Change'].apply(
-                    lambda x: '🚀 Top Climber' if x > 0 else ('📉 Top Laggard' if x < 0 else 'Stabil')
+                    lambda x: 'Top Climber' if x > 0 else ('Top Laggard' if x < 0 else 'Stabil')
                 )
             
                 # UBAH: Ganti semua Return_7d menjadi Return_5d
@@ -1636,29 +1636,29 @@ def render_main_dashboard():
 
                 col1, col2 = st.columns(2)
                 with col1:
-                    st.subheader(f"🚀 Top Climbers 5 Days Return {title}")
+                    st.subheader(f"Top Climbers 5 Days Return {title}")
                     climbers = leaderboard_display[leaderboard_display['Rank_Change'] > 0].sort_values('Rank_Change', ascending=False).head(10)
                     if not climbers.empty:
                         st.dataframe(climbers, hide_index=True, use_container_width=True)
                     else:
                         st.info("Tidak ada top climbers dalam periode ini.")
                 with col2:
-                    st.subheader(f"📉 Top Laggards 5 Days Return {title}")
+                    st.subheader(f"Top Laggards 5 Days Return {title}")
                     laggards = leaderboard_display[leaderboard_display['Rank_Change'] < 0].sort_values('Rank_Change', ascending=True).head(10)
                     if not laggards.empty:
                         st.dataframe(laggards, hide_index=True, use_container_width=True)
                     else:
                         st.info("Tidak ada top laggards dalam periode ini.")
 
-                st.subheader(f"📋 Leaderboard Lengkap Return 5 Hari {title}")
+                st.subheader(f"Leaderboard Lengkap Return 5 Hari {title}")
                 st.dataframe(leaderboard_display.sort_values('Rank_Today'), hide_index=True, use_container_width=True)
             
-                st.subheader(f"💡 Produk Performa Terbaik Selama 5 Hari {title}")
+                st.subheader(f"Produk Performa Terbaik Selama 5 Hari {title}")
                 top_3 = leaderboard_display.nsmallest(3, 'Rank_Today')
                 top_climbers = leaderboard_display[leaderboard_display['Rank_Change'] > 0].nlargest(3, 'Rank_Change')
                 col_rec1, col_rec2 = st.columns(2)
                 with col_rec1:
-                    st.markdown("**🏅 Top 3 Performers Saat Ini**")
+                    st.markdown("**Top 3 Performers Saat Ini**")
                     for idx, row in top_3.iterrows():
                         # UBAH: Tampilkan Return_5d
                         st.markdown(f"• **{row['Instrument']}** - Return 5d: {row['Return_5d']}")
@@ -1690,8 +1690,8 @@ def render_main_dashboard():
                         date_today_str = valid_trading_days.index[-1].strftime('%d %b %Y')
                         date_yesterday_str = valid_trading_days.index[-2].strftime('%d %b %Y')
                     
-                        st.subheader(f"⚡ Peringkat Harian (Daily % Change) - {title}")
-                        st.caption(f"🗓️ Membandingkan penutupan: **{date_today_str}** vs **{date_yesterday_str}**")
+                        st.subheader(f"Peringkat Harian (Daily % Change) - {title}")
+                        st.caption(f"Membandingkan penutupan: **{date_today_str}** vs **{date_yesterday_str}**")
                     
                         # 2. Hitung Persentase Perubahan
                         daily_pct_lb = ((price_today_lb / price_yesterday_lb) - 1) * 100
@@ -1736,7 +1736,7 @@ def render_main_dashboard():
     # ==================== TAB 3: KORELASI ====================
     with tab_correlation:
         st.header("Analisis Korelasi")
-        st.info("ℹ️ **Metodologi:** Menggunakan **Korelasi Pearson** pada pergerakan *return* harian. Nilai 1 (Hijau) berarti pergerakan searah sempurna, -1 (Merah) berlawanan sempurna, dan 0 (Kuning/Pucat) menunjukkan tidak ada hubungan linier antar aset.")
+        st.info("**Metodologi:** Menggunakan **Korelasi Pearson** pada pergerakan *return* harian. Nilai 1 (Hijau) berarti pergerakan searah sempurna, -1 (Merah) berlawanan sempurna, dan 0 (Kuning/Pucat) menunjukkan tidak ada hubungan linier antar aset.")
     
         # --- 1. Ekstrak Daftar Manajer Investasi (MI) Dinamis ---
         all_fund_names = list(df_equity.columns) + list(df_bond.columns)
@@ -1835,11 +1835,11 @@ def render_main_dashboard():
         
             col1, col2 = st.columns(2)
             with col1:
-                st.subheader("🔥 Top 5 Korelasi Positif Tertinggi")
+                st.subheader("Top 5 Korelasi Positif Tertinggi")
                 top_corr = corr_long.sort_values('Correlation', ascending=False).head(5)
                 st.dataframe(top_corr, hide_index=True, use_container_width=True)
             with col2:
-                st.subheader("❄️ Top 5 Korelasi Terendah")
+                st.subheader("Top 5 Korelasi Terendah")
                 bottom_corr = corr_long.sort_values('Correlation', ascending=True).head(5)
                 st.dataframe(bottom_corr, hide_index=True, use_container_width=True)
         else:
@@ -1847,13 +1847,13 @@ def render_main_dashboard():
         
     # ==================== TAB 4: PERFORMA & RANKING (GABUNGAN) ====================
     with tab_performance:
-        st.header("📊 Performa, Metrik & Riwayat Peringkat")
+        st.header("Performa, Metrik & Riwayat Peringkat")
     
         # Kalkulasi string tanggal untuk deskripsi dinamis
         start_date_str = ana_start_dt.strftime('%d %b %Y')
         end_date_str = ana_end_dt.strftime('%d %b %Y')
     
-        st.info(f"""ℹ️ **Metodologi Metrik & Skor Komposit ({date_option} | {start_date_str} s/d {end_date_str}):**
+        st.info(f"""**Metodologi Metrik & Skor Komposit ({date_option} | {start_date_str} s/d {end_date_str}):**
         - **Momentum Return (4 Metrik):** Persentase profit 1W, 1M, 3M, dan Total Return.
         - **Risk & Reward (4 Metrik):** Volatilitas, Sharpe Ratio, Alpha, dan Beta.
         - **Konsistensi Peringkat (12 Metrik):** Frekuensi dan *streak* produk bertahan di Top 5, 10, dan 20 pada berbagai rentang waktu.
@@ -1885,11 +1885,11 @@ def render_main_dashboard():
             full_performance_clean = full_performance.drop(index=[x for x in young_all if x in full_performance.index], errors='ignore')
         
             # --- 1. DUA LEADERBOARD TOP 5 (ATAS) ---
-            st.subheader(f"🏆 Leaderboards: Top 5 {title}")
+            st.subheader(f"Leaderboards: Top 5 {title}")
             col_top1, col_top2 = st.columns(2)
             
             with col_top1:
-                st.markdown(f"**🌟 Top 5 Composite Score** (Benchmark: {selected_bench_label})")
+                st.markdown(f"**Top 5 Composite Score** (Benchmark: {selected_bench_label})")
                 top5_score = full_performance_clean.sort_values('Total_Score', ascending=False).head(5)
                 df_show_score = top5_score[['Total_Score']].copy()
                 df_show_score['Total_Score'] = df_show_score['Total_Score'].round(3)
@@ -1898,7 +1898,7 @@ def render_main_dashboard():
                 st.dataframe(df_show_score, use_container_width=True)
  
             with col_top2:
-                st.markdown(f"**🥇 Top 5 Performa (Return {date_option})**")
+                st.markdown(f"**Top 5 Performa (Return {date_option})**")
                 top5_return = full_performance_clean.sort_values('Interval_Return', ascending=False).head(5)
                 df_show_return = top5_return[['Interval_Return']].copy()
                 df_show_return['Interval_Return'] = (df_show_return['Interval_Return'] * 100).round(2).astype(str) + '%'
@@ -1909,7 +1909,7 @@ def render_main_dashboard():
             st.divider()
 
             # --- 2. ANALISIS MENDALAM PRODUK ---
-            st.subheader(f"🔍 Analisis Kekuatan & Kelemahan")
+            st.subheader(f"Analisis Kekuatan & Kelemahan")
             st.caption(f"Perbandingan kinerja {date_option} terakhir terhadap rata-rata kategori.")
         
             # Menggunakan list dari Top 5 Skor Komposit sebagai opsi dropdown
@@ -1980,7 +1980,7 @@ def render_main_dashboard():
             st.divider()
         
             # --- 3. TABEL METRIK & SKOR LENGKAP ---
-            st.subheader(f"📋 Tabel Metrik & Skor Lengkap - {title} (Benchmark: {selected_bench_label})")
+            st.subheader(f"Tabel Metrik & Skor Lengkap - {title} (Benchmark: {selected_bench_label})")
             st.caption(f"Fokus Evaluasi: **{scoring_mode}**. Tabel ini menampilkan nilai mentah (raw) dari masing-masing metrik untuk perbandingan langsung.")        
         
             # [Perbaikan]: Menyalin langsung dari metrik mentah lalu menyuntikkan Total Skor agar tidak ada kolom yang terhapus
@@ -2066,7 +2066,7 @@ def render_main_dashboard():
             st.divider()
         
             # --- 3. HEATMAP ANALISIS LANJUTAN (BAWAH) ---
-            st.subheader(f"🔥 Heatmap Analisis Lanjutan - {title} (Benchmark: {selected_bench_label})")
+            st.subheader(f"Heatmap Analisis Lanjutan - {title} (Benchmark: {selected_bench_label})")
             st.caption("Pilih interval lompatan waktu dan jumlah kolom evaluasi. Sistem akan memotong data murni berdasarkan urutan indeks array (Trading Days), menjamin jumlah kolom yang presisi.")
         
             # Panel Kendali Terpadu untuk Heatmap
@@ -2089,7 +2089,7 @@ def render_main_dashboard():
             # Sistem Peringatan Jika Data Historis dari API Tidak Cukup Panjang
             required_days = num_columns * trading_interval
             if len(df_perf_full) < required_days:
-                st.warning(f"⚠️ Data yang ditarik dari API hanya mencakup {len(df_perf_full)} hari bursa. Untuk merender {num_columns} kolom dengan interval '{selected_period_label}', Anda harus mengubah 'Start Date' di sidebar menjadi lebih lama (minimal {(required_days/252):.1f} tahun ke belakang).")
+                st.warning(f"Data yang ditarik dari API hanya mencakup {len(df_perf_full)} hari bursa. Untuk merender {num_columns} kolom dengan interval '{selected_period_label}', Anda harus mengubah 'Start Date' di sidebar menjadi lebih lama (minimal {(required_days/252):.1f} tahun ke belakang).")
         
             def get_custom_highlights(df_ranks, top_n=10):
                 stats = []
@@ -2136,7 +2136,7 @@ def render_main_dashboard():
                     
                         highlight_score = get_custom_highlights(rank_score_data, top_n=selected_top_n)
                         if not highlight_score.empty:
-                            st.markdown(f"🌟 **Top Highlights (Paling Sering Masuk Peringkat 1-{selected_top_n}):**")
+                            st.markdown(f"**Top Highlights (Paling Sering Masuk Peringkat 1-{selected_top_n}):**")
                             st.dataframe(highlight_score, use_container_width=True)
                     
                         st.dataframe(rank_score_data.style.background_gradient(cmap='RdYlGn_r', axis=None).format(precision=0, na_rep="-"), use_container_width=True)
@@ -2157,7 +2157,7 @@ def render_main_dashboard():
                     highlight_period = get_custom_highlights(period_ranks_df, top_n=selected_top_n)
                 
                     if not highlight_period.empty:
-                        st.markdown(f"🌟 **Highlights (Paling Konsisten Masuk Top {selected_top_n}):**")
+                        st.markdown(f"**Highlights (Paling Konsisten Masuk Top {selected_top_n}):**")
                         st.dataframe(highlight_period, use_container_width=True)
                     
                     st.dataframe(period_ranks_df.style.background_gradient(cmap='RdYlGn_r', axis=None).format(precision=0, na_rep="-"), use_container_width=True)
@@ -2175,7 +2175,7 @@ def render_main_dashboard():
                     highlight_monthly = get_custom_highlights(monthly_ranks_temp, top_n=selected_top_n)
                 
                     if not highlight_monthly.empty:
-                        st.markdown(f"🌟 **Highlights (Paling Sering Masuk Top {selected_top_n} Profit Bulanan Tertinggi):**")
+                        st.markdown(f"**Highlights (Paling Sering Masuk Top {selected_top_n} Profit Bulanan Tertinggi):**")
                         st.dataframe(highlight_monthly, use_container_width=True)
                 
                     monthly_pct_df['Rata-rata MoM'] = monthly_pct_df.mean(axis=1)
@@ -2189,8 +2189,8 @@ def render_main_dashboard():
 
     # ==================== TAB 5: PERBANDINGAN HISTORIS ====================
     with tab_compare:
-        st.header("📉 Perbandingan Historis & Analisis Volatilitas")
-        st.info(f"""ℹ️ **Panduan Analisis Grafik ({date_option} | {start_date_str} s/d {end_date_str}):**
+        st.header("Perbandingan Historis & Analisis Volatilitas")
+        st.info(f"""**Panduan Analisis Grafik ({date_option} | {start_date_str} s/d {end_date_str}):**
         - **Kinerja Absolut & Relatif:** Melacak tren Harga (NAV) aktual, akumulasi keuntungan (Return Kumulatif), dan risiko penurunan terdalam dari titik puncak (Drawdown).
         - **Volatility Bands (Standard Deviation Bands):** Memvisualisasikan area kewajaran harga. Harga yang menyentuh pita atas (+2 atau +3 SD) mengindikasikan area jenuh beli (*Overbought*/Mahal), sedangkan sentuhan di pita bawah (-2 atau -3 SD) menunjukkan jenuh jual (*Oversold*/Murah).
         - **Pergerakan Metrik Harian (Rolling):** Memantau tren perubahan metrik **Alpha, Beta (terhadap {selected_benchmark_label}), Sharpe Ratio, dan Volatilitas** secara dinamis dari hari ke hari, berguna untuk melihat apakah kinerja manajer investasi konsisten atau hanya kebetulan di satu waktu.""")
@@ -2211,7 +2211,7 @@ def render_main_dashboard():
             legend_layout = dict(orientation="h", yanchor="top", y=-0.2, xanchor="center", x=0.5, title=None)
         
             # --- 1. Kinerja Absolut & Relatif ---
-            st.subheader("📊 Kinerja Absolut & Relatif")
+            st.subheader("Kinerja Absolut & Relatif")
         
             fig_prices = px.line(df_compare, x=df_compare.index, y=df_compare.columns, title="Harga Historis Aktual (NAV)")
             fig_prices.update_layout(xaxis_title="Tanggal", yaxis_title="Harga", legend=legend_layout, height=900)
@@ -2297,7 +2297,7 @@ def render_main_dashboard():
             else:
                 dynamic_window = target_window
 
-            st.subheader(f"📈 Volatility Bands NAV (Rolling {date_option})")
+            st.subheader(f"Volatility Bands NAV (Rolling {date_option})")
         
             # --- TOGGLE TEMA GRAFIK ---
             chart_theme = st.radio("Pilih Tema Visual Grafik:", ["Dark Theme", "Light Theme"], horizontal=True, key="band_theme_radio")
@@ -2374,7 +2374,7 @@ def render_main_dashboard():
             st.divider()
                 
             # --- 3. Pergerakan Metrik Harian ---
-            st.subheader(f"📊 Grafik Pergerakan Metrik Harian (Rolling {date_option})")
+            st.subheader(f"Grafik Pergerakan Metrik Harian (Rolling {date_option})")
         
             # Kalkulasi metrik rolling menggunakan dynamic_window yang sama
             df_selected_full = df_all_instruments_full[selected_instruments]
@@ -2416,7 +2416,7 @@ def render_main_dashboard():
             # 5. ANALISIS REZIM PASAR MAKRO (BULL / BEAR DETECTION SYSTEM)
             # =====================================================================
             st.divider()
-            st.subheader("🧭 Analisis Rezim Pasar Makro (Sistem Skoring Dinamis)")
+            st.subheader("Analisis Rezim Pasar Makro (Sistem Skoring Dinamis)")
             st.caption("Mendeteksi fase pasar menggunakan konfluensi 3 pilar: Multi-Timeframe Struktur Harga (Breakout), Momentum Relatif (RSI), dan Aliran Dana (Price-Volume Confluence).")
 
             col_r1, col_r2 = st.columns(2)
@@ -2494,11 +2494,11 @@ def render_main_dashboard():
                         df_ta['net_regime_score'] = df_ta['score_structure'] + df_ta['score_rsi'] + df_ta['score_momentum']
 
                         def get_regime_label(score):
-                            if score >= 75: return "Strong Bull Market 🚀"
-                            elif score > 15: return "Weak Bull / Accumulation 📈"
-                            elif score <= -75: return "Strong Bear Market 🩸"
-                            elif score < -15: return "Weak Bear / Distribution 📉"
-                            else: return "Sideways / Choppy ⚖️"
+                            if score >= 75: return "Strong Bull Market "
+                            elif score > 15: return "Weak Bull / Accumulation "
+                            elif score <= -75: return "Strong Bear Market "
+                            elif score < -15: return "Weak Bear / Distribution "
+                            else: return "Sideways / Choppy "
 
                         df_ta['Regime'] = df_ta['net_regime_score'].apply(get_regime_label)
 
@@ -2565,7 +2565,7 @@ def render_main_dashboard():
                             st.info(f"### Status Terkini: {latest_regime} \nSkor Konfluensi: **{latest_score:.1f}/100**. Pasar berada dalam fase transisi, konsolidasi, atau parameter teknikal saling bertentangan.")
 
                         # --- TABEL DEKONSTRUKSI DATA MENTAH ---
-                        with st.expander("🔍 Audit Data: Buka Dekonstruksi Skor Harian"):
+                        with st.expander("Audit Data: Buka Dekonstruksi Skor Harian"):
                             df_details = df_ta[['Close', 'agg_market_trend', 'score_structure', 'RSI_14', 'score_rsi', 'mc_trend', 'score_momentum', 'net_regime_score', 'Regime']].copy()
                             df_details.index = df_details.index.strftime('%Y-%m-%d')
                             
@@ -2591,7 +2591,7 @@ def render_main_dashboard():
                             )
 
                     except Exception as e:
-                        st.error(f"❌ Terjadi kesalahan komputasi: {e}")
+                        st.error(f"Terjadi kesalahan komputasi: {e}")
                 
         else:
             st.info("Silakan pilih instrumen dari dropdown di atas untuk memulai analisis.")
@@ -2599,7 +2599,7 @@ def render_main_dashboard():
     
     #==================== TAB 6: GRAFIK OBLIGASI NEGARA ====================
     with tab_gov_bonds:
-        st.header("🏛️ Grafik Obligasi Negara (SBN/SUN/Sukuk)")
+        st.header("Grafik Obligasi Negara (SBN/SUN/Sukuk)")
     
         # Gunakan data utuh (_full) agar rentang waktu bisa ditarik independen dari sidebar
         if not df_gov_bonds_price_full.empty:
@@ -2615,7 +2615,7 @@ def render_main_dashboard():
             if selected_gov_bonds:
                 st.divider()
                 # --- PANEL KONTROL CUT-OFF TANGGAL OBLIGASI ---
-                st.subheader("✂️ Cut-off Data Analisis Obligasi")
+                st.subheader("Cut-off Data Analisis Obligasi")
                 col_date1, col_date2 = st.columns(2)
             
                 # Ambil batas data paling awal dan akhir yang tersedia di master data
@@ -2636,7 +2636,7 @@ def render_main_dashboard():
             
                 st.divider()
                 # --- PANEL KONTROL WAKTU ---
-                st.subheader("⏱️ Kontrol Rentang & Jarak Waktu")
+                st.subheader("Kontrol Rentang & Jarak Waktu")
                 col_t1, col_t2 = st.columns(2)
                 with col_t1:
                     interval_mapping = {
@@ -2717,7 +2717,7 @@ def render_main_dashboard():
                 # SEGMEN 1: ASK PRICE (HARGA PENAWARAN)
                 # ==========================================
                 st.divider()
-                st.subheader("📊 Analisis Harga Obligasi (Ask Price)")
+                st.subheader("Analisis Harga Obligasi (Ask Price)")
             
                 tab_p1, tab_p2 = st.tabs(["1. Harga Mentah (Granularitas)", "2. Persentase Kenaikan (Rebasing)"])
             
@@ -2745,7 +2745,7 @@ def render_main_dashboard():
                 # SEGMEN 2: ASK YIELD (IMBAL HASIL)
                 # ==========================================
                 st.divider()
-                st.subheader("📉 Analisis Imbal Hasil (Ask Yield)")
+                st.subheader("Analisis Imbal Hasil (Ask Yield)")
             
                 if not df_yield_raw.empty:
                     df_y_gran = apply_granularity(df_yield_raw, gran_code)
@@ -2766,13 +2766,13 @@ def render_main_dashboard():
     
     # ==================== TAB 7: REKOMENDASI REFINITIV ====================
     # with tab_recommendation:
-    #     st.header("🎯 Rekomendasi Fundamental (Refinitiv 1 Tahun)")
-    #     st.info("ℹ️ Data ini ditarik secara berkala dari sistem backend lokal dan disimpan di database cloud untuk menjamin kecepatan dan stabilitas.")
+    #     st.header("Rekomendasi Fundamental (Refinitiv 1 Tahun)")
+    #     st.info("Data ini ditarik secara berkala dari sistem backend lokal dan disimpan di database cloud untuk menjamin kecepatan dan stabilitas.")
 
     #     col_info, col_btn = st.columns([3, 1])
     #     with col_btn:
     #         # Tombol ini murni untuk men-trigger penarikan ulang dari database, bukan dari API
-    #         refresh_btn = st.button("🔄 Muat Ulang Database", use_container_width=True)
+    #         refresh_btn = st.button("Muat Ulang Database", use_container_width=True)
 
     #     # Menarik data dari tabel khusus metrik yang sudah diisi oleh script lokalmu
     #     with st.spinner("Mengambil metrik fundamental dari database..."):
@@ -2789,7 +2789,7 @@ def render_main_dashboard():
     #                 # Cek kapan terakhir kali data ini disinkronkan oleh laptopmu
     #                 if 'updated_at' in df_metrics.columns:
     #                     latest_sync = pd.to_datetime(df_metrics['updated_at']).max()
-    #                     st.caption(f"🕒 **Update Terakhir:** {latest_sync.strftime('%d %b %Y, %H:%M WIB')}")
+    #                     st.caption(f"**Update Terakhir:** {latest_sync.strftime('%d %b %Y, %H:%M WIB')}")
     #                     df_metrics = df_metrics.drop(columns=['updated_at'])
                 
     #                 # Tampilkan tabel dengan rapi
@@ -2800,12 +2800,12 @@ def render_main_dashboard():
     #                     height=500
     #                 )
     #             else:
-    #                 st.warning("⚠️ Belum ada data metrik di database. Pastikan script lokal penarik Refinitiv di laptopmu sudah dijalankan.")
+    #                 st.warning("Belum ada data metrik di database. Pastikan script lokal penarik Refinitiv di laptopmu sudah dijalankan.")
     #         except Exception as e:
-    #             st.error(f"❌ Gagal membaca database: {e}") 
+    #             st.error(f"Gagal membaca database: {e}") 
     # ==================== TAB 7: REKOMENDASI FUNDAMENTAL (MANUAL UPLOAD) ====================
     # with tab_recommendation:
-    #     st.header("🎯 Peringkat Fundamental (Data Manual)")
+    #     st.header("Peringkat Fundamental (Data Manual)")
     #     st.info("Unggah file Excel atau CSV berisi metrik fundamental. Sistem memprioritaskan skor tinggi untuk Alpha/Sharpe/Treynor dan skor rendah untuk StdDev.")
 
     #     # 1. Definisikan Template Contoh Data
@@ -2844,14 +2844,14 @@ def render_main_dashboard():
     #             if 'Nama Produk' in df_fund.columns and len(available_metrics) > 0:
     #                 data_valid = True
     #             else:
-    #                 st.error("❌ Format file tidak sesuai! Pastikan terdapat kolom 'Nama Produk' dan minimal satu kolom metrik yang penulisannya persis seperti contoh.")
+    #                 st.error("Format file tidak sesuai! Pastikan terdapat kolom 'Nama Produk' dan minimal satu kolom metrik yang penulisannya persis seperti contoh.")
     #         except Exception as e:
-    #             st.error(f"❌ Gagal membaca dokumen: {e}")
+    #             st.error(f"Gagal membaca dokumen: {e}")
 
     #     # 4. Logika Tampilan (Render UI)
     #     if not data_valid:
     #         # Jika belum ada file atau file salah, tampilkan panduan & template
-    #         st.write("### 💡 Contoh Format Tabel yang Diterima")
+    #         st.write("### Contoh Format Tabel yang Diterima")
     #         st.caption("Pastikan nama kolom di baris pertama persis seperti contoh di bawah ini. Kolom yang tidak tersedia/kosong akan diabaikan secara otomatis.")
     #         st.dataframe(template_data, hide_index=True, use_container_width=True)
         
@@ -2931,8 +2931,8 @@ def render_main_dashboard():
     #                         .format(format_dict)
     #                     )
                     
-    #                     st.success("✅ Dokumen berhasil diproses.")
-    #                     st.subheader("📋 Peringkat Fundamental Komposit")
+    #                     st.success("Dokumen berhasil diproses.")
+    #                     st.subheader("Peringkat Fundamental Komposit")
     #                     st.dataframe(styled_df, use_container_width=True, height=600)
     #                 else:
     #                     st.warning("Data tidak memiliki kolom performa/risiko yang valid untuk dihitung peringkatnya.")
