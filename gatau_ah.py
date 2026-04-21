@@ -2228,12 +2228,36 @@ def render_main_dashboard():
         - **Volatility Bands (Standard Deviation Bands):** Memvisualisasikan area kewajaran harga. Harga yang menyentuh pita atas (+2 atau +3 SD) mengindikasikan area jenuh beli (*Overbought*/Mahal), sedangkan sentuhan di pita bawah (-2 atau -3 SD) menunjukkan jenuh jual (*Oversold*/Murah).
         - **Pergerakan Metrik Harian (Rolling):** Memantau tren perubahan metrik **Alpha, Beta (terhadap {selected_benchmark_label}), Sharpe Ratio, dan Volatilitas** secara dinamis dari hari ke hari, berguna untuk melihat apakah kinerja manajer investasi konsisten atau hanya kebetulan di satu waktu.""")
     
-        available_instruments = df_all_instruments.columns.tolist()
+        # --- Filter Manajer Investasi (MI) ---
+        all_instruments_list = df_all_instruments.columns.tolist()
+        mi_set = set()
+        for name in all_instruments_list:
+            if name.startswith("BNP Paribas"): mi_set.add("BNP Paribas")
+            elif name.startswith("Eastspring"): mi_set.add("Eastspring")
+            else: mi_set.add(name.split()[0])
+            
+        mi_list_filter = sorted(list(mi_set))
+        
+        selected_mi_filters = st.multiselect(
+            "🔍 Filter Berdasarkan Manajer Investasi (Kosongkan untuk tampilkan semua MI):",
+            options=mi_list_filter,
+            key="hist_mi_filter"
+        )
+        
+        if selected_mi_filters:
+            available_instruments = [c for c in all_instruments_list if any(c.startswith(mi) for mi in selected_mi_filters)]
+            default_selection = available_instruments # Semua produk dari MI tersebut langsung terpilih
+        else:
+            available_instruments = all_instruments_list
+            default_selection = available_instruments[:min(2, len(available_instruments))] if available_instruments else []
+
+        # Kunci dinamis agar Streamlit me-reset widget dan mengambil default baru setiap kali filter berubah
+        dynamic_key = f"compare_multiselect_{hash(tuple(selected_mi_filters))}"
         selected_instruments = st.multiselect(
-            "Pilih Instrumen untuk Dibandingkan",
+            "📈 Pilih Instrumen untuk Dibandingkan",
             options=available_instruments,
-            default=available_instruments[:min(2, len(available_instruments))] if available_instruments else [],
-            key="compare_multiselect"
+            default=default_selection,
+            key=dynamic_key
         )
     
         # Syarat diubah menjadi minimal 1 instrumen agar analisis volatilitas tunggal dapat dilakukan
@@ -2538,8 +2562,9 @@ def render_main_dashboard():
                         # ==========================================================
                         # 4. VISUALISASI DENGAN DETAIL KOMPONEN
                         # ==========================================================
-                        fig_regime = make_subplots(rows=2, cols=1, shared_xaxes=True, 
-                                                 vertical_spacing=0.08, row_heights=[0.60, 0.40])
+                        fig_regime = make_subplots(rows=5, cols=1, shared_xaxes=True, 
+                                                 vertical_spacing=0.04, 
+                                                 row_heights=[0.3, 0.15, 0.15, 0.15, 0.25])
 
                         # Panel 1: Harga Aktual & Marker
                         fig_regime.add_trace(go.Scatter(x=df_ta.index, y=df_ta['Close'], mode='lines', 
@@ -2561,28 +2586,43 @@ def render_main_dashboard():
                                 text="CHoCH", textposition="top center", name="Reversal Turun"
                             ), row=1, col=1)
 
-                        # Panel 2: Stacked Bar Chart untuk Dekonstruksi Skor
-                        fig_regime.add_trace(go.Bar(x=df_ta.index, y=df_ta['score_structure'], name='Skor Struktur (40)', marker_color='#2962FF'), row=2, col=1)
-                        fig_regime.add_trace(go.Bar(x=df_ta.index, y=df_ta['score_rsi'], name='Skor RSI (35)', marker_color='#FF6D00'), row=2, col=1)
-                        fig_regime.add_trace(go.Bar(x=df_ta.index, y=df_ta['score_momentum'], name='Skor Likuiditas (25)', marker_color='#00C853'), row=2, col=1)
+                        # Panel 2: Skor Struktur (Independen)
+                        fig_regime.add_trace(go.Bar(x=df_ta.index, y=df_ta['score_structure'], name='Struktur (Individu)', marker_color='#2962FF', showlegend=False), row=2, col=1)
+
+                        # Panel 3: Skor RSI (Independen)
+                        fig_regime.add_trace(go.Bar(x=df_ta.index, y=df_ta['score_rsi'], name='RSI (Individu)', marker_color='#FF6D00', showlegend=False), row=3, col=1)
+
+                        # Panel 4: Skor Likuiditas (Independen)
+                        fig_regime.add_trace(go.Bar(x=df_ta.index, y=df_ta['score_momentum'], name='Likuiditas (Individu)', marker_color='#00C853', showlegend=False), row=4, col=1)
+
+                        # Panel 5: Stacked Bar Chart untuk Dekonstruksi Skor (Gabungan)
+                        fig_regime.add_trace(go.Bar(x=df_ta.index, y=df_ta['score_structure'], name='Skor Struktur (40)', marker_color='#2962FF'), row=5, col=1)
+                        fig_regime.add_trace(go.Bar(x=df_ta.index, y=df_ta['score_rsi'], name='Skor RSI (35)', marker_color='#FF6D00'), row=5, col=1)
+                        fig_regime.add_trace(go.Bar(x=df_ta.index, y=df_ta['score_momentum'], name='Skor Likuiditas (25)', marker_color='#00C853'), row=5, col=1)
                         
-                        # Garis overlay untuk Total Net Score
-                        fig_regime.add_trace(go.Scatter(x=df_ta.index, y=df_ta['net_regime_score'], mode='lines', name='Total Net Score', line=dict(color='white', width=1.5)), row=2, col=1)
+                        # Garis overlay untuk Total Net Score di Panel 5
+                        fig_regime.add_trace(go.Scatter(x=df_ta.index, y=df_ta['net_regime_score'], mode='lines', name='Total Net Score', line=dict(color='white', width=1.5)), row=5, col=1)
 
-                        fig_regime.add_hline(y=75, line_dash="dot", line_color="lime", row=2, col=1, annotation_text="Strong Bull (>75)")
-                        fig_regime.add_hline(y=-75, line_dash="dot", line_color="red", row=2, col=1, annotation_text="Strong Bear (<-75)")
+                        # Garis batas Overbought/Oversold untuk panel gabungan
+                        fig_regime.add_hline(y=75, line_dash="dot", line_color="lime", row=5, col=1, annotation_text="Strong Bull (>75)")
+                        fig_regime.add_hline(y=-75, line_dash="dot", line_color="red", row=5, col=1, annotation_text="Strong Bear (<-75)")
 
+                        # Konfigurasi Layout Final
                         fig_regime.update_layout(
                             title=f"Siklus Rezim Pasar Multi-Pivot: {regime_target}",
-                            height=800,
+                            height=1200, # Diperbesar menjadi 1200px agar 5 panel tidak bertumpuk
                             hovermode="x unified",
                             barmode='relative',
                             showlegend=True,
                             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5)
                         )
 
+                        # Konfigurasi nama sumbu Y dan batas maksimal skala masing-masing panel
                         fig_regime.update_yaxes(title_text="Harga Aktual", row=1, col=1)
-                        fig_regime.update_yaxes(title_text="Skor Komponen (-100 ke 100)", range=[-105, 105], row=2, col=1)
+                        fig_regime.update_yaxes(title_text="Struktur", range=[-45, 45], row=2, col=1)
+                        fig_regime.update_yaxes(title_text="RSI", range=[-40, 40], row=3, col=1)
+                        fig_regime.update_yaxes(title_text="Likuiditas", range=[-30, 30], row=4, col=1)
+                        fig_regime.update_yaxes(title_text="Net Score", range=[-105, 105], row=5, col=1)
 
                         st.plotly_chart(fig_regime, use_container_width=True)
 
