@@ -210,6 +210,7 @@ def run_daily_sync(start_date, end_date):
                 'TR.ClosePrice': 'value', 'America Close Bid Price': 'value', 
                 'America  Close Bid Price': 'value', 'cLOSE Price': 'value', 
                 'TR.AmericaCloseBidPrice': 'value',
+                'Ask Yield': 'value', 'TR.ASKYIELD': 'value', # <--- Tambahan parameter Suku Bunga
                 'Volume': 'volume', 'TR.Volume': 'volume', 'TR.Volume.date': 'date'
             }
             process_and_upload(df_mac, "macro_daily", ["value", "volume"], mapping_mac)
@@ -1288,6 +1289,7 @@ def render_main_dashboard():
     df_equity_full = all_data['equity']
     df_bond_full = all_data['bond']
     df_index_full = all_data['index']
+    df_index_vol_full = all_data.get('index_vol', pd.DataFrame())
     df_komoditas_full = all_data['komoditas']
     df_mata_uang_full = all_data['mata_uang']
     df_suku_bunga_full = all_data['suku_bunga']
@@ -1338,6 +1340,7 @@ def render_main_dashboard():
     df_equity = safe_slice(df_equity_full, ana_start_dt, ana_end_dt)
     df_bond = safe_slice(df_bond_full, ana_start_dt, ana_end_dt)
     df_index = safe_slice(df_index_full, ana_start_dt, ana_end_dt)
+    df_index_vol = safe_slice(df_index_vol_full, ana_start_dt, ana_end_dt)
     df_komoditas = safe_slice(df_komoditas_full, ana_start_dt, ana_end_dt)
     df_mata_uang = safe_slice(df_mata_uang_full, ana_start_dt, ana_end_dt)
     df_suku_bunga = safe_slice(df_suku_bunga_full, ana_start_dt, ana_end_dt)
@@ -1609,14 +1612,14 @@ def render_main_dashboard():
             
         st.divider()
 
-        st.subheader(f"Tren Pasar: {selected_benchmark_label}")
+        st.subheader(f"Tren Pasar: {selected_bench_label}")
         if not benchmark_series_sliced.empty:
             # Kalkulasi persentase perubahan dari awal periode untuk keterangan tambahan
             bench_start_val = benchmark_series_sliced.iloc[0]
             bench_end_val = benchmark_series_sliced.iloc[-1]
             bench_pct_change = ((bench_end_val / bench_start_val) - 1) * 100
         
-            st.caption(f"Pergerakan nilai **{selected_benchmark_label}**.")
+            st.caption(f"Pergerakan nilai **{selected_bench_label}**.")
         
             fig_bench = px.line(
                 x=benchmark_series_sliced.index, 
@@ -1640,6 +1643,30 @@ def render_main_dashboard():
             st.plotly_chart(fig_bench, use_container_width=True)
         else:
             st.warning(f"Data historis untuk benchmark {selected_benchmark_label} tidak tersedia pada rentang waktu ini.")
+            
+        # --- GRAFIK LIKUIDITAS (HANYA UNTUK INDEKS) ---
+        if selected_benchmark_ticker in df_index_full.columns:
+            if selected_benchmark_ticker in df_index_vol.columns:
+                liquidity_series = df_index_vol[selected_benchmark_ticker].dropna()
+                if not liquidity_series.empty and (liquidity_series != 0).any():
+                    st.subheader(f"Likuiditas: {selected_bench_label}")
+                    st.caption(f"Volume perdagangan untuk **{selected_bench_label}**.")
+                    fig_liq = px.line(
+                        x=liquidity_series.index, 
+                        y=liquidity_series.values
+                    )
+                    fig_liq.update_layout(
+                        xaxis_title="",
+                        yaxis_title="Volume",
+                        hovermode="x unified",
+                        margin=dict(l=0, r=0, t=10, b=0),
+                        height=300
+                    )
+                    fig_liq.update_traces(
+                        line_color='rgba(255, 165, 0, 0.8)'
+                    )
+                    st.plotly_chart(fig_liq, use_container_width=True)
+
         st.divider()
 
     # ==================== TAB 2: LEADERBOARD ====================
@@ -2332,40 +2359,42 @@ def render_main_dashboard():
         
             st.divider()
         
-            # --- 2. Analisis Volatilitas Dinamis ---
-            total_days_full = len(df_all_instruments_full)
-        
-            # Menentukan window secara dinamis mengikuti opsi di sidebar
-            if date_option == "1 Bulan":
-                target_window = 22
-            elif date_option == "3 Bulan":
-                target_window = 63
-            elif date_option == "6 Bulan":
-                target_window = 126
-            elif date_option == "1 Tahun":
-                target_window = 252
-            else:
-                target_window = 252
+           # ==========================================================
+            # 2. Analisis Volatilitas Dinamis (Volatility Bands - Terpisah)
+            # ==========================================================
+            st.divider()
+            st.subheader("Volatility Bands NAV (Standard Deviation)")
+            st.caption("Pita volatilitas ini diatur secara independen untuk keperluan visualisasi titik ekstrem, tidak memengaruhi komputasi skor komposit di halaman lain.")
             
-            # Pengaman: Jika data mentah kurang panjang, sesuaikan otomatis agar grafik tidak error
-            if target_window >= total_days_full - 5:
-                dynamic_window = max(22, total_days_full // 3) 
-                st.warning(f"Data historis ({total_days_full} hari) tidak cukup panjang untuk rolling {target_window} hari secara penuh. Window disesuaikan menjadi {dynamic_window} hari.")
-            else:
-                dynamic_window = target_window
+            # Definisikan kembali panjang total data historis
+            total_days_full = len(df_all_instruments_full)
+            
+            col_vb1, col_vb2 = st.columns(2)
+            with col_vb1:
+                band_target_window = st.number_input(
+                    "Interval Rolling Grafik (Hari Bursa):", 
+                    min_value=5, 
+                    max_value=1260, 
+                    value=252, 
+                    step=1, 
+                    key="vol_band_period"
+                )
+            with col_vb2:
+                chart_theme = st.radio("Tema Visual Grafik:", ["Dark Theme", "Light Theme"], horizontal=True, key="band_theme_radio")
 
-            st.subheader(f"Volatility Bands NAV (Rolling {date_option})")
-        
-            # --- TOGGLE TEMA GRAFIK ---
-            chart_theme = st.radio("Pilih Tema Visual Grafik:", ["Dark Theme", "Light Theme"], horizontal=True, key="band_theme_radio")
+            # Pengaman window murni untuk Volatility Bands
+            if band_target_window >= total_days_full - 5:
+                band_dynamic_window = max(22, total_days_full // 3) 
+                st.warning(f"Data historis tidak cukup untuk rolling {band_target_window} hari. Pita disesuaikan ke {band_dynamic_window} hari.")
+            else:
+                band_dynamic_window = band_target_window
 
             for inst in selected_instruments:
-                # Gunakan ffill().bfill() agar indeks waktu tidak terputus
                 inst_nav_full = df_all_instruments_full[inst].ffill().bfill()
             
-                # Kalkulasi Volatility Bands (Bands) menggunakan window yang sama dengan sidebar
-                roll_mean_full = inst_nav_full.rolling(window=dynamic_window).mean()
-                roll_std_full = inst_nav_full.rolling(window=dynamic_window).std()
+                # Kalkulasi Volatility Bands menggunakan window terpisah (band_dynamic_window)
+                roll_mean_full = inst_nav_full.rolling(window=band_dynamic_window).mean()
+                roll_std_full = inst_nav_full.rolling(window=band_dynamic_window).std()
             
                 upper_1sd_full = roll_mean_full + (1 * roll_std_full)
                 lower_1sd_full = roll_mean_full - (1 * roll_std_full)
@@ -2374,7 +2403,6 @@ def render_main_dashboard():
                 upper_3sd_full = roll_mean_full + (3 * roll_std_full)
                 lower_3sd_full = roll_mean_full - (3 * roll_std_full)
             
-                # Potong (slice) rentang waktu untuk tampilan layar
                 inst_nav = safe_slice(inst_nav_full, ana_start_dt, ana_end_dt)
                 roll_mean = safe_slice(roll_mean_full, ana_start_dt, ana_end_dt)
                 upper_1sd = safe_slice(upper_1sd_full, ana_start_dt, ana_end_dt)
@@ -2386,13 +2414,12 @@ def render_main_dashboard():
 
                 fig_band = go.Figure()
             
-                # --- KONFIGURASI WARNA BERDASARKAN TEMA ---
                 if chart_theme == "Dark Theme":
                     nav_color = 'white'
                     mean_color = 'cyan'
-                    sd1_color = 'rgba(0, 255, 127, 0.9)' # Terang: Spring Green
-                    sd2_color = 'rgba(255, 215, 0, 0.9)' # Terang: Gold
-                    sd3_color = 'rgba(255, 69, 0, 0.9)'  # Terang: Red Orange
+                    sd1_color = 'rgba(0, 255, 127, 0.9)'
+                    sd2_color = 'rgba(255, 215, 0, 0.9)'
+                    sd3_color = 'rgba(255, 69, 0, 0.9)' 
                     template_style = "plotly_dark"
                 else:
                     nav_color = 'black'
@@ -2402,9 +2429,8 @@ def render_main_dashboard():
                     sd3_color = 'rgba(214, 39, 40, 0.6)'
                     template_style = "plotly_white"
 
-                # Injeksi warna dinamis ke dalam trace grafik
                 fig_band.add_trace(go.Scatter(x=inst_nav.index, y=inst_nav, mode='lines', name='NAV Aktual', line=dict(color=nav_color, width=2.5)))
-                fig_band.add_trace(go.Scatter(x=roll_mean.index, y=roll_mean, mode='lines', name=f'Mean ({dynamic_window}d)', line=dict(color=mean_color, width=1.5, dash='dot')))
+                fig_band.add_trace(go.Scatter(x=roll_mean.index, y=roll_mean, mode='lines', name=f'Mean ({band_dynamic_window}d)', line=dict(color=mean_color, width=1.5, dash='dot')))
             
                 fig_band.add_trace(go.Scatter(x=upper_1sd.index, y=upper_1sd, mode='lines', name='+1 SD', line=dict(color=sd1_color, width=1, dash='dash')))
                 fig_band.add_trace(go.Scatter(x=lower_1sd.index, y=lower_1sd, mode='lines', name='-1 SD', line=dict(color=sd1_color, width=1, dash='dash')))
@@ -2421,11 +2447,10 @@ def render_main_dashboard():
                     yaxis_title="NAV / Harga", 
                     legend=legend_layout, 
                     hovermode="x unified",
-                    template=template_style, # Paksa template bawaan Plotly
+                    template=template_style,
                     height=900
                 )
             
-                # PENTING: theme=None mematikan override warna default dari Streamlit
                 st.plotly_chart(fig_band, use_container_width=True, theme=None) 
             
             st.divider()
@@ -2433,7 +2458,19 @@ def render_main_dashboard():
             # --- 3. Pergerakan Metrik Harian ---
             st.subheader(f"Grafik Pergerakan Metrik Harian (Rolling {date_option})")
         
-            # Kalkulasi metrik rolling menggunakan dynamic_window yang sama
+            # Definisikan ulang dynamic_window murni berdasarkan rentang di sidebar
+            if date_option == "1 Bulan": target_window = 22
+            elif date_option == "3 Bulan": target_window = 63
+            elif date_option == "6 Bulan": target_window = 126
+            elif date_option == "1 Tahun": target_window = 252
+            else: target_window = 252
+            
+            if target_window >= len(df_all_instruments_full) - 5:
+                dynamic_window = max(22, len(df_all_instruments_full) // 3) 
+            else:
+                dynamic_window = target_window
+
+            # Kalkulasi metrik rolling menggunakan dynamic_window yang sudah dikalibrasi
             df_selected_full = df_all_instruments_full[selected_instruments]
             dynamic_ts = calculate_rolling_timeseries(df_selected_full, benchmark_series_full, risk_free_rate, window=dynamic_window, bench_ticker=selected_benchmark_ticker)
             sliced_ts_dict = {k: safe_slice(v, ana_start_dt, ana_end_dt) for k, v in dynamic_ts.items()}
@@ -2470,201 +2507,125 @@ def render_main_dashboard():
             st.divider()
         
             # =====================================================================
-            # 5. ANALISIS REZIM PASAR MAKRO (BULL / BEAR DETECTION SYSTEM)
-            # =====================================================================
-            st.divider()
-            st.subheader("Analisis Rezim Pasar Makro (Sistem Skoring Dinamis)")
-            st.caption("Mendeteksi fase pasar menggunakan konfluensi 3 pilar: Multi-Timeframe Struktur Harga (Breakout), Momentum Relatif (RSI), dan Aliran Dana (Price-Volume Confluence).")
+        # 4. ANALISIS REZIM PASAR (2-PILAR: STRUKTUR & RSI - LINE CHART)
+        # =====================================================================
+        st.subheader("🧭 Analisis Rezim Pasar Makro (Sistem 2-Pilar)")
+        st.caption("Mendeteksi fase pasar menggunakan konfluensi Struktur Harga (Price Action) dan Momentum Relatif (RSI).")
+        
+        col_r1, col_r2 = st.columns(2)
+        with col_r1:
+            regime_target = st.selectbox("Instrumen Fokus untuk Analisis Rezim:", options=selected_instruments, key="regime_foc_v4")
+        with col_r2:
+            struktur_lengths = st.multiselect("Rentang Deteksi Pivot (Struktur Harga):", options=[3, 5, 7, 10, 14, 21, 50], default=[5, 7, 10], key="regime_len_v4")
 
-            col_r1, col_r2 = st.columns(2)
-            with col_r1:
-                regime_target = st.selectbox("Pilih Instrumen untuk Analisis Rezim:", options=selected_instruments, key="regime_inst")
-            with col_r2:
-                # Dropdown Multi-Length untuk Struktur Harga
-                struktur_lengths = st.multiselect("Rentang Deteksi Pivot (Struktur Harga)", options=[3, 5, 7, 10, 14, 21, 50], default=[5, 7, 10], key="regime_lb")
+        if regime_target and struktur_lengths:
+            with st.spinner("Mengkalkulasi model konfluensi 2-pilar..."):
+                try:
+                    price_series_regime = df_compare[regime_target].dropna()
+                    df_ta = pd.DataFrame({'Close': price_series_regime})
 
-            if regime_target and struktur_lengths:
-                with st.spinner("Mengkalkulasi Mesin Skoring Konfluensi..."):
-                    try:
-                        price_series_regime = df_compare[regime_target].dropna()
-
-                        # 1. PRE-PROCESSING: Integrasi Likuiditas Makro Aktual
-                        bench_ticker = selected_benchmark_ticker
-                        if 'index_vol' in all_data and bench_ticker in all_data['index_vol'].columns:
-                            proxy_vol_series = all_data['index_vol'][bench_ticker].reindex(price_series_regime.index).ffill()
-                            proxy_vol_series = proxy_vol_series.fillna(proxy_vol_series.mean())
-                            if proxy_vol_series.isna().all() or proxy_vol_series.mean() == 0:
-                                proxy_vol_series = 1000000
-                        else:
-                            proxy_vol_series = 1000000 
-
-                        df_ta = pd.DataFrame({
-                            'Close': price_series_regime,
-                            'Volume': proxy_vol_series
-                        })
-
-                        # ==========================================================
-                        # 2. EKSEKUSI INDIKATOR (ARSITEKTUR HYBRID)
-                        # ==========================================================
+                    # --- PILAR 1: STRUKTUR HARGA (Bobot: 55) ---
+                    df_ta['agg_market_trend'] = 0.0
+                    choch_bull_dates, choch_bear_dates = set(), set()
+                    
+                    for l in struktur_lengths:
+                        # Logic Breakout
+                        swing_high = df_ta['Close'].rolling(window=l).max().shift(1)
+                        swing_low = df_ta['Close'].rolling(window=l).min().shift(1)
                         
-                        # PILAR 1: Market Structure (Multi-Length Breakout) - PURE PANDAS
-                        df_ta['agg_market_trend'] = 0.0
-                        choch_bull_dates = set()
-                        choch_bear_dates = set()
-
-                        for l in struktur_lengths:
-                            swing_high = df_ta['Close'].rolling(window=l).max().shift(1)
-                            swing_low = df_ta['Close'].rolling(window=l).min().shift(1)
-
-                            bull_cross = (df_ta['Close'] > swing_high) & (df_ta['Close'].shift(1) <= swing_high.shift(1))
-                            bear_cross = (df_ta['Close'] < swing_low) & (df_ta['Close'].shift(1) >= swing_low.shift(1))
-
-                            choch_bull_dates.update(df_ta[bull_cross].index)
-                            choch_bear_dates.update(df_ta[bear_cross].index)
-
-                            trend_l = np.where(df_ta['Close'] > df_ta['Close'].rolling(l).mean(), 1, -1)
-                            df_ta['agg_market_trend'] += trend_l
-
-                        df_ta['agg_market_trend'] = df_ta['agg_market_trend'] / len(struktur_lengths)
-                        df_ta['score_structure'] = df_ta['agg_market_trend'] * 40
-
-                        # PILAR 2: RSI (Momentum Leading) - PYINDICATORS
-                        from pyindicators import rsi
-                        # Menggunakan library teroptimasi untuk indikator standar
-                        df_ta = rsi(df_ta, source_column='Close', period=14, result_column='RSI_14')
-
-                        rsi_normalized = (df_ta['RSI_14'] - 50) / 20
-                        rsi_normalized = rsi_normalized.clip(lower=-1, upper=1)
-                        df_ta['score_rsi'] = rsi_normalized.fillna(0) * 35
-
-                        # PILAR 3: Momentum Confluence (Aliran Dana Makro) - PURE PANDAS
-                        vol_ma = df_ta['Volume'].rolling(20).mean()
-                        price_dir = np.sign(df_ta['Close'].diff())
+                        bull_mask = (df_ta['Close'] > swing_high) & (df_ta['Close'].shift(1) <= swing_high.shift(1))
+                        bear_mask = (df_ta['Close'] < swing_low) & (df_ta['Close'].shift(1) >= swing_low.shift(1))
                         
-                        vol_multiplier = np.where(df_ta['Volume'] > vol_ma, 1.0, 0.5) 
-                        df_ta['mc_trend'] = price_dir * vol_multiplier
-                        df_ta['score_momentum'] = df_ta['mc_trend'].fillna(0) * 25
+                        choch_bull_dates.update(df_ta[bull_mask].index)
+                        choch_bear_dates.update(df_ta[bear_mask].index)
                         
-                        # ==========================================================
-                        # 3. MESIN SKORING FINAL
-                        # ==========================================================
-                        df_ta['net_regime_score'] = df_ta['score_structure'] + df_ta['score_rsi'] + df_ta['score_momentum']
+                        # Logic Trend (MA)
+                        df_ta['agg_market_trend'] += np.where(df_ta['Close'] > df_ta['Close'].rolling(l).mean(), 1, -1)
+                    
+                    # Normalisasi skor struktur ke skala 55
+                    df_ta['score_structure'] = (df_ta['agg_market_trend'] / len(struktur_lengths)) * 55
 
-                        def get_regime_label(score):
-                            if score >= 75: return "Strong Bull Market "
-                            elif score > 15: return "Weak Bull / Accumulation "
-                            elif score <= -75: return "Strong Bear Market "
-                            elif score < -15: return "Weak Bear / Distribution "
-                            else: return "Sideways / Choppy "
+                    # --- PILAR 2: RSI 14 (Bobot: 45) ---
+                    delta = df_ta['Close'].diff()
+                    gain = delta.clip(lower=0).ewm(alpha=1/14, adjust=False).mean()
+                    loss = (-1 * delta.clip(upper=0)).ewm(alpha=1/14, adjust=False).mean()
+                    rs = np.where(loss == 0, 100, gain / loss)
+                    df_ta['RSI_14'] = np.where(loss == 0, 100, 100 - (100 / (1 + rs)))
+                    
+                    # Normalisasi RSI ke skala 45 (-45 ke +45)
+                    rsi_norm = ((df_ta['RSI_14'] - 50) / 20).clip(-1, 1)
+                    df_ta['score_rsi'] = rsi_norm.fillna(0) * 45
 
-                        df_ta['Regime'] = df_ta['net_regime_score'].apply(get_regime_label)
+                    # --- SKOR AKHIR (NET REGIME SCORE) ---
+                    df_ta['net_regime_score'] = df_ta['score_structure'] + df_ta['score_rsi']
 
-                        # ==========================================================
-                        # 4. VISUALISASI DENGAN DETAIL KOMPONEN
-                        # ==========================================================
-                        fig_regime = make_subplots(rows=5, cols=1, shared_xaxes=True, 
-                                                 vertical_spacing=0.04, 
-                                                 row_heights=[0.3, 0.15, 0.15, 0.15, 0.25])
+                    def get_regime_label(score):
+                        if score >= 75: return "Strong Bull Market 🚀"
+                        elif score > 15: return "Weak Bull / Accumulation 📈"
+                        elif score <= -75: return "Strong Bear Market 🩸"
+                        elif score < -15: return "Weak Bear / Distribution 📉"
+                        else: return "Sideways / Choppy ⚖️"
 
-                        # Panel 1: Harga Aktual & Marker
-                        fig_regime.add_trace(go.Scatter(x=df_ta.index, y=df_ta['Close'], mode='lines', 
-                                                      name=f'NAV', line=dict(color='orange', width=2)), row=1, col=1)
+                    df_ta['Regime'] = df_ta['net_regime_score'].apply(get_regime_label)
 
-                        if choch_bull_dates:
-                            choch_bull_list = sorted(list(choch_bull_dates))
-                            fig_regime.add_trace(go.Scatter(
-                                x=choch_bull_list, y=df_ta.loc[choch_bull_list, 'Close'], mode='markers+text',
-                                marker=dict(symbol='triangle-up', size=14, color='lime', line=dict(color='white', width=1)),
-                                text="CHoCH", textposition="bottom center", name="Reversal Naik"
-                            ), row=1, col=1)
+                    # ==========================================================
+                    # 4. VISUALISASI 4-PANEL (LINE CHART)
+                    # ==========================================================
+                    # Kita gunakan 4 baris: NAV, Skor Struktur, Skor RSI, Net Score
+                    fig_regime = make_subplots(rows=4, cols=1, shared_xaxes=True, 
+                                             vertical_spacing=0.05, 
+                                             row_heights=[0.4, 0.2, 0.2, 0.2])
 
-                        if choch_bear_dates:
-                            choch_bear_list = sorted(list(choch_bear_dates))
-                            fig_regime.add_trace(go.Scatter(
-                                x=choch_bear_list, y=df_ta.loc[choch_bear_list, 'Close'], mode='markers+text',
-                                marker=dict(symbol='triangle-down', size=14, color='red', line=dict(color='white', width=1)),
-                                text="CHoCH", textposition="top center", name="Reversal Turun"
-                            ), row=1, col=1)
+                    # Panel 1: NAV & Breakout Markers
+                    fig_regime.add_trace(go.Scatter(x=df_ta.index, y=df_ta['Close'], name='NAV', line=dict(color='orange', width=2)), row=1, col=1)
+                    
+                    if choch_bull_dates:
+                        bull_list = sorted(list(choch_bull_dates))
+                        fig_regime.add_trace(go.Scatter(x=bull_list, y=df_ta.loc[bull_list, 'Close'], mode='markers', 
+                                                      marker=dict(symbol='triangle-up', size=12, color='lime'), name='Bull Break'), row=1, col=1)
+                    
+                    if choch_bear_dates:
+                        bear_list = sorted(list(choch_bear_dates))
+                        fig_regime.add_trace(go.Scatter(x=bear_list, y=df_ta.loc[bear_list, 'Close'], mode='markers', 
+                                                      marker=dict(symbol='triangle-down', size=12, color='red'), name='Bear Break'), row=1, col=1)
 
-                        # Panel 2: Skor Struktur (Independen)
-                        fig_regime.add_trace(go.Bar(x=df_ta.index, y=df_ta['score_structure'], name='Struktur (Individu)', marker_color='#2962FF', showlegend=False), row=2, col=1)
+                    # Panel 2: Line Skor Struktur
+                    fig_regime.add_trace(go.Scatter(x=df_ta.index, y=df_ta['score_structure'], name='Skor Struktur', 
+                                                  line=dict(color='#2962FF', width=1.5), fill='tozeroy'), row=2, col=1)
 
-                        # Panel 3: Skor RSI (Independen)
-                        fig_regime.add_trace(go.Bar(x=df_ta.index, y=df_ta['score_rsi'], name='RSI (Individu)', marker_color='#FF6D00', showlegend=False), row=3, col=1)
+                    # Panel 3: Line Skor RSI
+                    fig_regime.add_trace(go.Scatter(x=df_ta.index, y=df_ta['score_rsi'], name='Skor RSI', 
+                                                  line=dict(color='#FF6D00', width=1.5), fill='tozeroy'), row=3, col=1)
 
-                        # Panel 4: Skor Likuiditas (Independen)
-                        fig_regime.add_trace(go.Bar(x=df_ta.index, y=df_ta['score_momentum'], name='Likuiditas (Individu)', marker_color='#00C853', showlegend=False), row=4, col=1)
+                    # Panel 4: Line Net Regime Score
+                    # Kita tambahkan area fill untuk memperjelas zona positif/negatif
+                    fig_regime.add_trace(go.Scatter(x=df_ta.index, y=df_ta['net_regime_score'], name='NET Regime Score', 
+                                                  line=dict(color='white', width=2), fill='tozeroy'), row=4, col=1)
 
-                        # Panel 5: Stacked Bar Chart untuk Dekonstruksi Skor (Gabungan)
-                        fig_regime.add_trace(go.Bar(x=df_ta.index, y=df_ta['score_structure'], name='Skor Struktur (40)', marker_color='#2962FF'), row=5, col=1)
-                        fig_regime.add_trace(go.Bar(x=df_ta.index, y=df_ta['score_rsi'], name='Skor RSI (35)', marker_color='#FF6D00'), row=5, col=1)
-                        fig_regime.add_trace(go.Bar(x=df_ta.index, y=df_ta['score_momentum'], name='Skor Likuiditas (25)', marker_color='#00C853'), row=5, col=1)
-                        
-                        # Garis overlay untuk Total Net Score di Panel 5
-                        fig_regime.add_trace(go.Scatter(x=df_ta.index, y=df_ta['net_regime_score'], mode='lines', name='Total Net Score', line=dict(color='white', width=1.5)), row=5, col=1)
+                    # Garis ambang batas di Panel Net Score
+                    fig_regime.add_hline(y=75, line_dash="dot", line_color="lime", row=4, col=1, annotation_text="Strong Bull")
+                    fig_regime.add_hline(y=-75, line_dash="dot", line_color="red", row=4, col=1, annotation_text="Strong Bear")
+                    fig_regime.add_hline(y=0, line_color="gray", opacity=0.5, row=4, col=1)
 
-                        # Garis batas Overbought/Oversold untuk panel gabungan
-                        fig_regime.add_hline(y=75, line_dash="dot", line_color="lime", row=5, col=1, annotation_text="Strong Bull (>75)")
-                        fig_regime.add_hline(y=-75, line_dash="dot", line_color="red", row=5, col=1, annotation_text="Strong Bear (<-75)")
+                    fig_regime.update_layout(height=1000, hovermode="x unified", legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5))
+                    fig_regime.update_yaxes(title_text="NAV", row=1, col=1)
+                    fig_regime.update_yaxes(title_text="Struk (55)", range=[-60, 60], row=2, col=1)
+                    fig_regime.update_yaxes(title_text="RSI (45)", range=[-50, 50], row=3, col=1)
+                    fig_regime.update_yaxes(title_text="Net Score", range=[-110, 110], row=4, col=1)
 
-                        # Konfigurasi Layout Final
-                        fig_regime.update_layout(
-                            title=f"Siklus Rezim Pasar Multi-Pivot: {regime_target}",
-                            height=1200, # Diperbesar menjadi 1200px agar 5 panel tidak bertumpuk
-                            hovermode="x unified",
-                            barmode='relative',
-                            showlegend=True,
-                            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5)
-                        )
+                    st.plotly_chart(fig_regime, use_container_width=True)
 
-                        # Konfigurasi nama sumbu Y dan batas maksimal skala masing-masing panel
-                        fig_regime.update_yaxes(title_text="Harga Aktual", row=1, col=1)
-                        fig_regime.update_yaxes(title_text="Struktur", range=[-45, 45], row=2, col=1)
-                        fig_regime.update_yaxes(title_text="RSI", range=[-40, 40], row=3, col=1)
-                        fig_regime.update_yaxes(title_text="Likuiditas", range=[-30, 30], row=4, col=1)
-                        fig_regime.update_yaxes(title_text="Net Score", range=[-105, 105], row=5, col=1)
+                    # --- RINGKASAN STATUS ---
+                    l_score = df_ta['net_regime_score'].iloc[-1]
+                    l_regime = df_ta['Regime'].iloc[-1]
+                    
+                    st.info(f"### Status Rezim: {l_regime} \nSkor Akhir: **{l_score:.1f}/100** (Struktur: {df_ta['score_structure'].iloc[-1]:.1f} | RSI: {df_ta['score_rsi'].iloc[-1]:.1f})")
 
-                        st.plotly_chart(fig_regime, use_container_width=True)
+                    with st.expander("🔍 Audit Data Skor Harian"):
+                        st.dataframe(df_ta[['Close', 'score_structure', 'RSI_14', 'score_rsi', 'net_regime_score', 'Regime']].sort_index(ascending=False), use_container_width=True)
 
-                        # --- TAMPILAN STATUS TERKINI ---
-                        latest_score = df_ta['net_regime_score'].iloc[-1]
-                        latest_regime = df_ta['Regime'].iloc[-1]
-
-                        if latest_score >= 75:
-                            st.success(f"### Status Terkini: {latest_regime} \nSkor Konfluensi: **{latest_score:.1f}/100**. Pasar tervalidasi dalam fase ekspansi yang solid. Momentum RSI ekstrem mendukung konfirmasi struktur harga ganda.")
-                        elif latest_score <= -75:
-                            st.error(f"### Status Terkini: {latest_regime} \nSkor Konfluensi: **{latest_score:.1f}/100**. Tekanan jual berat tervalidasi oleh keruntuhan struktural ganda dan kejatuhan momentum RSI.")
-                        else:
-                            st.info(f"### Status Terkini: {latest_regime} \nSkor Konfluensi: **{latest_score:.1f}/100**. Pasar berada dalam fase transisi, konsolidasi, atau parameter teknikal saling bertentangan.")
-
-                        # --- TABEL DEKONSTRUKSI DATA MENTAH ---
-                        with st.expander("Audit Data: Buka Dekonstruksi Skor Harian"):
-                            df_details = df_ta[['Close', 'agg_market_trend', 'score_structure', 'RSI_14', 'score_rsi', 'mc_trend', 'score_momentum', 'net_regime_score', 'Regime']].copy()
-                            df_details.index = df_details.index.strftime('%Y-%m-%d')
-                            
-                            df_details.columns = [
-                                'NAV', 'Koefisien Tren', 'Skor Struktur', 
-                                'Nilai RSI', 'Skor RSI', 
-                                'Koefisien Likuiditas', 'Skor Likuiditas', 
-                                'NET SCORE', 'Status Rezim'
-                            ]
-                            
-                            st.dataframe(
-                                df_details.sort_index(ascending=False).style.format({
-                                    'NAV': '{:.2f}',
-                                    'Koefisien Tren': '{:.2f}',
-                                    'Skor Struktur': '{:.1f}',
-                                    'Nilai RSI': '{:.2f}',
-                                    'Skor RSI': '{:.1f}',
-                                    'Koefisien Likuiditas': '{:.2f}',
-                                    'Skor Likuiditas': '{:.1f}',
-                                    'NET SCORE': '{:.1f}'
-                                }),
-                                use_container_width=True
-                            )
-
-                    except Exception as e:
-                        st.error(f"Terjadi kesalahan komputasi: {e}")
+                except Exception as e:
+                    st.error(f"Terjadi kesalahan komputasi rezim: {e}")
                 
         else:
             st.info("Silakan pilih instrumen dari dropdown di atas untuk memulai analisis.")
