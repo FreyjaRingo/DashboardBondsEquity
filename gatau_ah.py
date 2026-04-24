@@ -1557,62 +1557,75 @@ def render_main_dashboard():
                     use_container_width=True
                 )
                 st.divider()
-
-        # --- TAMBAHAN: TABEL REVERSAL NAIK & TURUN ---
-        st.subheader("Reversal Harian Seluruh Reksadana (Naik & Turun)")
-        st.caption("Menampilkan seluruh reksadana (Equity & Fixed Income) yang mengalami pembalikan arah tren harian.")
+            
+        # =====================================================================
+        # --- TAMBAHAN: TABEL RINGKASAN BoS (NAV & RSI) ---
+        # =====================================================================
+        st.divider()
+        st.subheader("Ringkasan Reversal Struktur (BoS)")
         
-        if not df_all_instruments.empty and len(df_all_instruments) >= 3:
-            df_recent = df_all_instruments.tail(3)
-            ret_recent = df_recent.pct_change().dropna()
+        # Mengambil setting 'bos_len_v5' yang ada di Tab 5 (Perbandingan Historis) via session state.
+        # Fallback [5, 7, 10] jika user belum sempat membuka Tab 5.
+        current_bos_lens = st.session_state.get("bos_len_v5", [5, 7, 10])
+        
+        st.caption(f"Menampilkan produk yang mengalami penembusan struktur (BoS) pada NAV atau RSI menggunakan Pivot: {current_bos_lens}")
+
+        if not df_all_instruments.empty:
+            summary_bos_list = []
             
-            if len(ret_recent) >= 2:
-                ret_yesterday = ret_recent.iloc[-2]
-                ret_today = ret_recent.iloc[-1]
+            for inst in df_all_instruments.columns:
+                df_temp = pd.DataFrame({'Close': df_all_instruments[inst].ffill()})
                 
-                mask_naik = (ret_yesterday < 0) & (ret_today > 0)
-                reversal_naik_cols = mask_naik[mask_naik].index.tolist()
+                # 1. Kalkulasi RSI (Standard 14 Day)
+                delta = df_temp['Close'].diff()
+                gain = delta.clip(lower=0).ewm(alpha=1/14, adjust=False).mean()
+                loss = (-1 * delta.clip(upper=0)).ewm(alpha=1/14, adjust=False).mean()
+                rs = np.where(loss == 0, 100, gain / loss)
+                df_temp['RSI'] = np.where(loss == 0, 100, 100 - (100 / (1 + rs)))
+
+                is_bull_nav, is_bear_nav = False, False
+                is_bull_rsi, is_bear_rsi = False, False
                 
-                mask_turun = (ret_yesterday > 0) & (ret_today < 0)
-                reversal_turun_cols = mask_turun[mask_turun].index.tolist()
-                
-                col_rev1, col_rev2 = st.columns(2)
-                
-                with col_rev1:
-                    st.markdown("**Reversal Naik**")
-                    if reversal_naik_cols:
-                        df_rev_naik = pd.DataFrame({
-                            "Nama Instrumen": reversal_naik_cols,
-                            "Return Kemarin": ret_yesterday[reversal_naik_cols].values,
-                            "Return Hari Ini": ret_today[reversal_naik_cols].values
-                        }).sort_values("Return Hari Ini", ascending=False)
-                        df_rev_naik["Return Kemarin"] = (df_rev_naik["Return Kemarin"] * 100).round(2).astype(str) + "%"
-                        df_rev_naik["Return Hari Ini"] = (df_rev_naik["Return Hari Ini"] * 100).round(2).astype(str) + "%"
-                        st.dataframe(df_rev_naik, hide_index=True, use_container_width=True)
-                    else:
-                        st.info("Tidak ada produk yang mengalami reversal naik.")
-                        
-                with col_rev2:
-                    st.markdown("**Reversal Turun**")
-                    if reversal_turun_cols:
-                        df_rev_turun = pd.DataFrame({
-                            "Nama Instrumen": reversal_turun_cols,
-                            "Return Kemarin": ret_yesterday[reversal_turun_cols].values,
-                            "Return Hari Ini": ret_today[reversal_turun_cols].values
-                        }).sort_values("Return Hari Ini", ascending=True)
-                        df_rev_turun["Return Kemarin"] = (df_rev_turun["Return Kemarin"] * 100).round(2).astype(str) + "%"
-                        df_rev_turun["Return Hari Ini"] = (df_rev_turun["Return Hari Ini"] * 100).round(2).astype(str) + "%"
-                        st.dataframe(df_rev_turun, hide_index=True, use_container_width=True)
-                    else:
-                        st.info("Tidak ada produk yang mengalami reversal turun.")
+                # Nilai terakhir untuk dicek terhadap Pivot
+                last_nav = df_temp['Close'].iloc[-1]
+                last_rsi = df_temp['RSI'].iloc[-1]
+
+                # 2. Deteksi BoS Multi-Length (Sesuai setting di Tab Perbandingan)
+                for l in current_bos_lens:
+                    # Ambil shift(1) agar nilai hari ini tidak ikut dihitung sebagai max/min masa lalu
+                    hi_n = df_temp['Close'].rolling(l).max().shift(1).iloc[-1]
+                    lo_n = df_temp['Close'].rolling(l).min().shift(1).iloc[-1]
+                    if last_nav > hi_n: is_bull_nav = True
+                    if last_nav < lo_n: is_bear_nav = True
+
+                    hi_r = df_temp['RSI'].rolling(l).max().shift(1).iloc[-1]
+                    lo_r = df_temp['RSI'].rolling(l).min().shift(1).iloc[-1]
+                    if last_rsi > hi_r: is_bull_rsi = True
+                    if last_rsi < lo_r: is_bear_rsi = True
+
+                stat_nav = "Bullish BoS 🟢" if is_bull_nav else ("Bearish BoS 🔴" if is_bear_nav else "-")
+                stat_rsi = "Bullish BoS 🟢" if is_bull_rsi else ("Bearish BoS 🔴" if is_bear_rsi else "-")
+
+                # 3. Filter: Hanya tampilkan produk yang memiliki aktivitas BoS di salah satu indikator
+                if stat_nav != "-" or stat_rsi != "-":
+                    summary_bos_list.append({
+                        "Nama Produk": inst,
+                        "BoS NAV": stat_nav,
+                        "BoS RSI": stat_rsi,
+                        "Kondisi": "Sinkron ✅" if stat_nav == stat_rsi else "Divergensi ⚠️"
+                    })
+
+            if summary_bos_list:
+                df_bos_summary = pd.DataFrame(summary_bos_list)
+                # Tampilkan tabel ringkasan
+                st.dataframe(df_bos_summary, use_container_width=True, hide_index=True)
             else:
-                st.warning("Data hari bursa aktif tidak mencukupi untuk menghitung reversal.")
-        else:
-            st.warning("Data tidak mencukupi untuk menghitung reversal.")
-            
+                st.info("Tidak ada indikasi BoS (Reversal Struktur) pada seluruh instrumen saat ini.")
+                
         st.divider()
 
         st.subheader(f"Tren Pasar: {selected_bench_label}")
+
         if not benchmark_series_sliced.empty:
             # Kalkulasi persentase perubahan dari awal periode untuk keterangan tambahan
             bench_start_val = benchmark_series_sliced.iloc[0]
@@ -2364,93 +2377,90 @@ def render_main_dashboard():
             # ==========================================================
             st.divider()
             st.subheader("Volatility Bands NAV (Standard Deviation)")
-            st.caption("Pita volatilitas ini diatur secara independen untuk keperluan visualisasi titik ekstrem, tidak memengaruhi komputasi skor komposit di halaman lain.")
+            st.caption("Pita volatilitas ini diatur secara independen untuk visualisasi titik ekstrem, tidak memengaruhi skor komposit.")
             
-            # Definisikan kembali panjang total data historis
             total_days_full = len(df_all_instruments_full)
             
             col_vb1, col_vb2 = st.columns(2)
             with col_vb1:
                 band_target_window = st.number_input(
                     "Interval Rolling Grafik (Hari Bursa):", 
-                    min_value=5, 
-                    max_value=1260, 
-                    value=252, 
-                    step=1, 
-                    key="vol_band_period"
+                    min_value=5, max_value=1260, value=252, step=1, key="vol_band_period"
+                )
+                # Fitur pemilihan SD Dinamis (Ketik/Pilih)
+                selected_sd = st.multiselect(
+                    "Pilih Level Standard Deviation yang ditampilkan:",
+                    options=[1, 2, 3, 4, 5, 6],
+                    default=[1, 2, 3],
+                    help="Ketik angka 1-6 atau pilih dari daftar. Secara otomatis menampilkan 1, 2, dan 3 SD.",
+                    key="sd_level_select"
                 )
             with col_vb2:
                 chart_theme = st.radio("Tema Visual Grafik:", ["Dark Theme", "Light Theme"], horizontal=True, key="band_theme_radio")
 
-            # Pengaman window murni untuk Volatility Bands
             if band_target_window >= total_days_full - 5:
                 band_dynamic_window = max(22, total_days_full // 3) 
-                st.warning(f"Data historis tidak cukup untuk rolling {band_target_window} hari. Pita disesuaikan ke {band_dynamic_window} hari.")
+                st.warning(f"Data historis terbatas. Pita disesuaikan ke {band_dynamic_window} hari.")
             else:
                 band_dynamic_window = band_target_window
 
             for inst in selected_instruments:
                 inst_nav_full = df_all_instruments_full[inst].ffill().bfill()
-            
-                # Kalkulasi Volatility Bands menggunakan window terpisah (band_dynamic_window)
                 roll_mean_full = inst_nav_full.rolling(window=band_dynamic_window).mean()
                 roll_std_full = inst_nav_full.rolling(window=band_dynamic_window).std()
-            
-                upper_1sd_full = roll_mean_full + (1 * roll_std_full)
-                lower_1sd_full = roll_mean_full - (1 * roll_std_full)
-                upper_2sd_full = roll_mean_full + (2 * roll_std_full)
-                lower_2sd_full = roll_mean_full - (2 * roll_std_full)
-                upper_3sd_full = roll_mean_full + (3 * roll_std_full)
-                lower_3sd_full = roll_mean_full - (3 * roll_std_full)
-            
+                
                 inst_nav = safe_slice(inst_nav_full, ana_start_dt, ana_end_dt)
                 roll_mean = safe_slice(roll_mean_full, ana_start_dt, ana_end_dt)
-                upper_1sd = safe_slice(upper_1sd_full, ana_start_dt, ana_end_dt)
-                lower_1sd = safe_slice(lower_1sd_full, ana_start_dt, ana_end_dt)
-                upper_2sd = safe_slice(upper_2sd_full, ana_start_dt, ana_end_dt)
-                lower_2sd = safe_slice(lower_2sd_full, ana_start_dt, ana_end_dt)
-                upper_3sd = safe_slice(upper_3sd_full, ana_start_dt, ana_end_dt)
-                lower_3sd = safe_slice(lower_3sd_full, ana_start_dt, ana_end_dt)
 
                 fig_band = go.Figure()
-            
+                
+                # Pengaturan Warna Tema
                 if chart_theme == "Dark Theme":
-                    nav_color = 'white'
-                    mean_color = 'cyan'
-                    sd1_color = 'rgba(0, 255, 127, 0.9)'
-                    sd2_color = 'rgba(255, 215, 0, 0.9)'
-                    sd3_color = 'rgba(255, 69, 0, 0.9)' 
+                    nav_color, mean_color = 'white', 'cyan'
                     template_style = "plotly_dark"
+                    # Palet warna untuk 6 level SD agar kontras
+                    sd_colors = {
+                        1: 'rgba(0, 255, 127, 0.8)',  # Spring Green
+                        2: 'rgba(255, 215, 0, 0.8)',  # Gold
+                        3: 'rgba(255, 69, 0, 0.8)',   # Red Orange
+                        4: 'rgba(173, 216, 230, 0.8)', # Light Blue
+                        5: 'rgba(238, 130, 238, 0.8)', # Violet
+                        6: 'rgba(211, 211, 211, 0.6)'  # Light Grey
+                    }
                 else:
-                    nav_color = 'black'
-                    mean_color = 'blue'
-                    sd1_color = 'rgba(44, 160, 44, 0.6)'
-                    sd2_color = 'rgba(255, 127, 14, 0.6)'
-                    sd3_color = 'rgba(214, 39, 40, 0.6)'
+                    nav_color, mean_color = 'black', 'blue'
                     template_style = "plotly_white"
+                    sd_colors = {
+                        1: 'rgba(44, 160, 44, 0.6)', 
+                        2: 'rgba(255, 127, 14, 0.6)', 
+                        3: 'rgba(214, 39, 40, 0.6)',
+                        4: 'rgba(31, 119, 180, 0.6)',
+                        5: 'rgba(148, 103, 189, 0.6)',
+                        6: 'rgba(127, 127, 127, 0.6)'
+                    }
 
                 fig_band.add_trace(go.Scatter(x=inst_nav.index, y=inst_nav, mode='lines', name='NAV Aktual', line=dict(color=nav_color, width=2.5)))
                 fig_band.add_trace(go.Scatter(x=roll_mean.index, y=roll_mean, mode='lines', name=f'Mean ({band_dynamic_window}d)', line=dict(color=mean_color, width=1.5, dash='dot')))
             
-                fig_band.add_trace(go.Scatter(x=upper_1sd.index, y=upper_1sd, mode='lines', name='+1 SD', line=dict(color=sd1_color, width=1, dash='dash')))
-                fig_band.add_trace(go.Scatter(x=lower_1sd.index, y=lower_1sd, mode='lines', name='-1 SD', line=dict(color=sd1_color, width=1, dash='dash')))
-            
-                fig_band.add_trace(go.Scatter(x=upper_2sd.index, y=upper_2sd, mode='lines', name='+2 SD', line=dict(color=sd2_color, width=1, dash='dash')))
-                fig_band.add_trace(go.Scatter(x=lower_2sd.index, y=lower_2sd, mode='lines', name='-2 SD', line=dict(color=sd2_color, width=1, dash='dash')))
-            
-                fig_band.add_trace(go.Scatter(x=upper_3sd.index, y=upper_3sd, mode='lines', name='+3 SD', line=dict(color=sd3_color, width=1, dash='dash')))
-                fig_band.add_trace(go.Scatter(x=lower_3sd.index, y=lower_3sd, mode='lines', name='-3 SD', line=dict(color=sd3_color, width=1, dash='dash')))
+                # Looping untuk merender SD yang dipilih saja
+                for sd in sorted(selected_sd):
+                    u_full = roll_mean_full + (sd * roll_std_full)
+                    l_full = roll_mean_full - (sd * roll_std_full)
+                    
+                    upper = safe_slice(u_full, ana_start_dt, ana_end_dt)
+                    lower = safe_slice(l_full, ana_start_dt, ana_end_dt)
+                    
+                    color = sd_colors.get(sd, 'gray')
+                    
+                    fig_band.add_trace(go.Scatter(x=upper.index, y=upper, mode='lines', name=f'+{sd} SD', line=dict(color=color, width=1, dash='dash')))
+                    fig_band.add_trace(go.Scatter(x=lower.index, y=lower, mode='lines', name=f'-{sd} SD', line=dict(color=color, width=1, dash='dash')))
             
                 fig_band.update_layout(
                     title=f"Distribusi Harga & Volatility Bands: {inst}", 
-                    xaxis_title="Tanggal", 
-                    yaxis_title="NAV / Harga", 
-                    legend=legend_layout, 
-                    hovermode="x unified",
-                    template=template_style,
-                    height=900
+                    xaxis_title="Tanggal", yaxis_title="NAV / Harga", 
+                    legend=legend_layout, hovermode="x unified",
+                    template=template_style, height=900
                 )
-            
                 st.plotly_chart(fig_band, use_container_width=True, theme=None) 
             
             st.divider()
@@ -2507,129 +2517,187 @@ def render_main_dashboard():
             st.divider()
         
             # =====================================================================
-        # 4. ANALISIS REZIM PASAR (2-PILAR: STRUKTUR & RSI - LINE CHART)
-        # =====================================================================
-        st.subheader("🧭 Analisis Rezim Pasar Makro (Sistem 2-Pilar)")
-        st.caption("Mendeteksi fase pasar menggunakan konfluensi Struktur Harga (Price Action) dan Momentum Relatif (RSI).")
-        
-        col_r1, col_r2 = st.columns(2)
-        with col_r1:
-            regime_target = st.selectbox("Instrumen Fokus untuk Analisis Rezim:", options=selected_instruments, key="regime_foc_v4")
-        with col_r2:
-            struktur_lengths = st.multiselect("Rentang Deteksi Pivot (Struktur Harga):", options=[3, 5, 7, 10, 14, 21, 50], default=[5, 7, 10], key="regime_len_v4")
+            # 5. ANALISIS REZIM PASAR (2-PILAR: STRUKTUR & RSI + BoS DETECTOR)
+            # =====================================================================
+            st.divider()
+            st.subheader("🧭 Analisis Rezim & Detektor BoS (NAV vs RSI)")
+            st.caption("Mendeteksi fase pasar menggunakan konfluensi Struktur (BoS) dan Momentum (RSI).")
 
-        if regime_target and struktur_lengths:
-            with st.spinner("Mengkalkulasi model konfluensi 2-pilar..."):
-                try:
-                    price_series_regime = df_compare[regime_target].dropna()
-                    df_ta = pd.DataFrame({'Close': price_series_regime})
+            # Input Parameter
+            col_b1, col_b2 = st.columns(2)
+            with col_b1:
+                regime_target = st.selectbox("Pilih Produk Utama (Grafik):", options=selected_instruments, key="reg_target_v5")
+            with col_b2:
+                # Menggunakan multiselect agar bisa diketik dan dipilih banyak sekaligus (maksimal 60)
+                bos_lengths = st.multiselect(
+                    "Rentang Pivot BoS (Hari):", 
+                    options=list(range(2, 61)), 
+                    default=[5, 7, 10], 
+                    key="bos_len_v5",
+                    help="Ketik angka (maksimal 60) atau pilih dari daftar. Bisa memilih lebih dari satu rentang."
+                )
 
-                    # --- PILAR 1: STRUKTUR HARGA (Bobot: 55) ---
-                    df_ta['agg_market_trend'] = 0.0
-                    choch_bull_dates, choch_bear_dates = set(), set()
+            if selected_instruments and bos_lengths:
+                summary_data = []
+                notif_data = []
+
+                # --- 1. PROSES SEMUA INSTRUMEN UNTUK TABEL RINGKASAN & NOTIFIKASI ---
+                for inst in selected_instruments:
+                    df_b = pd.DataFrame({'Close': df_compare[inst].ffill()})
                     
-                    for l in struktur_lengths:
-                        # Logic Breakout
-                        swing_high = df_ta['Close'].rolling(window=l).max().shift(1)
-                        swing_low = df_ta['Close'].rolling(window=l).min().shift(1)
-                        
-                        bull_mask = (df_ta['Close'] > swing_high) & (df_ta['Close'].shift(1) <= swing_high.shift(1))
-                        bear_mask = (df_ta['Close'] < swing_low) & (df_ta['Close'].shift(1) >= swing_low.shift(1))
-                        
-                        choch_bull_dates.update(df_ta[bull_mask].index)
-                        choch_bear_dates.update(df_ta[bear_mask].index)
-                        
-                        # Logic Trend (MA)
-                        df_ta['agg_market_trend'] += np.where(df_ta['Close'] > df_ta['Close'].rolling(l).mean(), 1, -1)
-                    
-                    # Normalisasi skor struktur ke skala 55
-                    df_ta['score_structure'] = (df_ta['agg_market_trend'] / len(struktur_lengths)) * 55
-
-                    # --- PILAR 2: RSI 14 (Bobot: 45) ---
-                    delta = df_ta['Close'].diff()
+                    # Kalkulasi RSI
+                    delta = df_b['Close'].diff()
                     gain = delta.clip(lower=0).ewm(alpha=1/14, adjust=False).mean()
                     loss = (-1 * delta.clip(upper=0)).ewm(alpha=1/14, adjust=False).mean()
                     rs = np.where(loss == 0, 100, gain / loss)
-                    df_ta['RSI_14'] = np.where(loss == 0, 100, 100 - (100 / (1 + rs)))
+                    df_b['RSI'] = np.where(loss == 0, 100, 100 - (100 / (1 + rs)))
+
+                    # Variabel penampung BoS Multi-Length
+                    is_bull_nav, is_bear_nav = False, False
+                    is_bull_rsi, is_bear_rsi = False, False
                     
-                    # Normalisasi RSI ke skala 45 (-45 ke +45)
-                    rsi_norm = ((df_ta['RSI_14'] - 50) / 20).clip(-1, 1)
-                    df_ta['score_rsi'] = rsi_norm.fillna(0) * 45
+                    df_b_close_last = df_b['Close'].iloc[-1]
+                    df_b_rsi_last = df_b['RSI'].iloc[-1]
 
-                    # --- SKOR AKHIR (NET REGIME SCORE) ---
-                    df_ta['net_regime_score'] = df_ta['score_structure'] + df_ta['score_rsi']
+                    # Logika BoS (Cukup salah satu rentang tembus, maka dianggap Valid)
+                    for l in bos_lengths:
+                        hi_nav = df_b['Close'].rolling(l).max().shift(1).iloc[-1]
+                        lo_nav = df_b['Close'].rolling(l).min().shift(1).iloc[-1]
+                        if df_b_close_last > hi_nav: is_bull_nav = True
+                        if df_b_close_last < lo_nav: is_bear_nav = True
 
-                    def get_regime_label(score):
-                        if score >= 75: return "Strong Bull Market 🚀"
-                        elif score > 15: return "Weak Bull / Accumulation 📈"
-                        elif score <= -75: return "Strong Bear Market 🩸"
-                        elif score < -15: return "Weak Bear / Distribution 📉"
-                        else: return "Sideways / Choppy ⚖️"
+                        hi_rsi = df_b['RSI'].rolling(l).max().shift(1).iloc[-1]
+                        lo_rsi = df_b['RSI'].rolling(l).min().shift(1).iloc[-1]
+                        if df_b_rsi_last > hi_rsi: is_bull_rsi = True
+                        if df_b_rsi_last < lo_rsi: is_bear_rsi = True
 
-                    df_ta['Regime'] = df_ta['net_regime_score'].apply(get_regime_label)
+                    status_nav = "Bullish BoS 📈" if is_bull_nav else ("Bearish BoS 📉" if is_bear_nav else "-")
+                    status_rsi = "Bullish BoS 📈" if is_bull_rsi else ("Bearish BoS 📉" if is_bear_rsi else "-")
 
-                    # ==========================================================
-                    # 4. VISUALISASI 4-PANEL (LINE CHART)
-                    # ==========================================================
-                    # Kita gunakan 4 baris: NAV, Skor Struktur, Skor RSI, Net Score
-                    fig_regime = make_subplots(rows=4, cols=1, shared_xaxes=True, 
-                                             vertical_spacing=0.05, 
-                                             row_heights=[0.4, 0.2, 0.2, 0.2])
+                    # Logika Penentuan Kondisi
+                    if status_nav == "-" and status_rsi == "-":
+                        kondisi_akhir = "Stagnan ➖"
+                    elif status_nav == status_rsi:
+                        kondisi_akhir = "Sinkron ✅"
+                    else:
+                        kondisi_akhir = "Divergensi ⚠️"
 
-                    # Panel 1: NAV & Breakout Markers
-                    fig_regime.add_trace(go.Scatter(x=df_ta.index, y=df_ta['Close'], name='NAV', line=dict(color='orange', width=2)), row=1, col=1)
+                    # Masukkan SEMUA instrumen ke Tabel Ringkasan (Tanpa Filter)
+                    summary_data.append({
+                        "Produk": inst,
+                        "Status NAV": status_nav,
+                        "Status RSI": status_rsi,
+                        "Kondisi": kondisi_akhir
+                    })
                     
-                    if choch_bull_dates:
-                        bull_list = sorted(list(choch_bull_dates))
-                        fig_regime.add_trace(go.Scatter(x=bull_list, y=df_ta.loc[bull_list, 'Close'], mode='markers', 
-                                                      marker=dict(symbol='triangle-up', size=12, color='lime'), name='Bull Break'), row=1, col=1)
-                    
-                    if choch_bear_dates:
-                        bear_list = sorted(list(choch_bear_dates))
-                        fig_regime.add_trace(go.Scatter(x=bear_list, y=df_ta.loc[bear_list, 'Close'], mode='markers', 
-                                                      marker=dict(symbol='triangle-down', size=12, color='red'), name='Bear Break'), row=1, col=1)
+                    # Filter Notifikasi Konflik Tetap Dipertahankan (Hanya yang Divergensi)
+                    if (status_nav != "-" or status_rsi != "-") and status_nav != status_rsi:
+                        notif_data.append({"Produk": inst, "Detail": f"NAV: {status_nav} | RSI: {status_rsi}"})
+                # Tampilan Tabel Notifikasi & Ringkasan
+                col_t1, col_t2 = st.columns([2, 1])
+                with col_t1:
+                    st.markdown("**📋 Ringkasan Struktur BoS Terkini**")
+                    if summary_data:
+                        st.dataframe(pd.DataFrame(summary_data), use_container_width=True, hide_index=True)
+                    else:
+                        st.info("Tidak ada penembusan struktur (BoS) pada instrumen terpilih hari ini.")
+                with col_t2:
+                    st.markdown("**⚠️ Notifikasi Divergensi**")
+                    if notif_data:
+                        st.warning("Ditemukan ketidaksesuaian struktur antara Harga dan Momentum!")
+                        st.dataframe(pd.DataFrame(notif_data), use_container_width=True, hide_index=True)
+                    else:
+                        st.success("Semua pergerakan tersinkronisasi dengan baik.")
 
-                    # Panel 2: Line Skor Struktur
-                    fig_regime.add_trace(go.Scatter(x=df_ta.index, y=df_ta['score_structure'], name='Skor Struktur', 
-                                                  line=dict(color='#2962FF', width=1.5), fill='tozeroy'), row=2, col=1)
+                # --- 2. GRAFIK DETAIL UNTUK PRODUK FOKUS (2-PILAR LINE CHART) ---
+                # --- 2. GRAFIK DETAIL UNTUK PRODUK FOKUS (2-PILAR LINE CHART) ---
+                if regime_target:
+                    st.divider()
+                    st.markdown(f"### Analisis Detail: {regime_target}")
+                    with st.spinner("Mengkalkulasi grafik rezim garis..."):
+                        try:
+                            # Ambil data historis lengkap untuk grafik
+                            df_f = pd.DataFrame({'Close': df_compare[regime_target].ffill()})
+                            
+                            # Re-kalkulasi RSI
+                            delta_f = df_f['Close'].diff()
+                            gain_f = delta_f.clip(lower=0).ewm(alpha=1/14, adjust=False).mean()
+                            loss_f = (-1 * delta_f.clip(upper=0)).ewm(alpha=1/14, adjust=False).mean()
+                            rs_f = np.where(loss_f == 0, 100, gain_f / loss_f)
+                            df_f['RSI'] = np.where(loss_f == 0, 100, 100 - (100 / (1 + rs_f)))
+                            
+                            # Kalkulasi Agregat MA Tren & Pengumpulan Marker untuk Multi-Length
+                            df_f['agg_market_trend'] = 0.0
+                            bull_dates = set()
+                            bear_dates = set()
+                            bull_rsi_dates = set()
+                            bear_rsi_dates = set()
 
-                    # Panel 3: Line Skor RSI
-                    fig_regime.add_trace(go.Scatter(x=df_ta.index, y=df_ta['score_rsi'], name='Skor RSI', 
-                                                  line=dict(color='#FF6D00', width=1.5), fill='tozeroy'), row=3, col=1)
+                            for l in bos_lengths:
+                                # Skoring Rata-Rata
+                                df_f['agg_market_trend'] += np.where(df_f['Close'] > df_f['Close'].rolling(l).mean(), 1, -1)
+                                
+                                # 1. Marker NAV
+                                hi_nav_s = df_f['Close'].rolling(l).max().shift(1)
+                                lo_nav_s = df_f['Close'].rolling(l).min().shift(1)
+                                bull_dates.update(df_f[(df_f['Close'] > hi_nav_s) & (df_f['Close'].shift(1) <= hi_nav_s.shift(1))].index)
+                                bear_dates.update(df_f[(df_f['Close'] < lo_nav_s) & (df_f['Close'].shift(1) >= lo_nav_s.shift(1))].index)
+                                
+                                # 2. Marker RSI
+                                hi_rsi_s = df_f['RSI'].rolling(l).max().shift(1)
+                                lo_rsi_s = df_f['RSI'].rolling(l).min().shift(1)
+                                bull_rsi_dates.update(df_f[(df_f['RSI'] > hi_rsi_s) & (df_f['RSI'].shift(1) <= hi_rsi_s.shift(1))].index)
+                                bear_rsi_dates.update(df_f[(df_f['RSI'] < lo_rsi_s) & (df_f['RSI'].shift(1) >= lo_rsi_s.shift(1))].index)
 
-                    # Panel 4: Line Net Regime Score
-                    # Kita tambahkan area fill untuk memperjelas zona positif/negatif
-                    fig_regime.add_trace(go.Scatter(x=df_ta.index, y=df_ta['net_regime_score'], name='NET Regime Score', 
-                                                  line=dict(color='white', width=2), fill='tozeroy'), row=4, col=1)
+                            # Skor Struktur (55 Poin)
+                            df_f['score_struct'] = (df_f['agg_market_trend'] / len(bos_lengths)) * 55
+                            
+                            # Skor RSI (45 Poin)
+                            rsi_norm = ((df_f['RSI'] - 50) / 20).clip(-1, 1)
+                            df_f['score_rsi'] = rsi_norm * 45
+                            
+                            # Total Net Score
+                            df_f['net_score'] = df_f['score_struct'] + df_f['score_rsi']
 
-                    # Garis ambang batas di Panel Net Score
-                    fig_regime.add_hline(y=75, line_dash="dot", line_color="lime", row=4, col=1, annotation_text="Strong Bull")
-                    fig_regime.add_hline(y=-75, line_dash="dot", line_color="red", row=4, col=1, annotation_text="Strong Bear")
-                    fig_regime.add_hline(y=0, line_color="gray", opacity=0.5, row=4, col=1)
+                            # Visualisasi 3-Panel
+                            fig_res = make_subplots(rows=3, cols=1, shared_xaxes=True, 
+                                                   vertical_spacing=0.05, 
+                                                   row_heights=[0.5, 0.25, 0.25])
 
-                    fig_regime.update_layout(height=1000, hovermode="x unified", legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5))
-                    fig_regime.update_yaxes(title_text="NAV", row=1, col=1)
-                    fig_regime.update_yaxes(title_text="Struk (55)", range=[-60, 60], row=2, col=1)
-                    fig_regime.update_yaxes(title_text="RSI (45)", range=[-50, 50], row=3, col=1)
-                    fig_regime.update_yaxes(title_text="Net Score", range=[-110, 110], row=4, col=1)
+                            # Panel 1: NAV + Markers
+                            fig_res.add_trace(go.Scatter(x=df_f.index, y=df_f['Close'], name='NAV', line=dict(color='orange', width=2)), row=1, col=1)
+                            if bull_dates:
+                                fig_res.add_trace(go.Scatter(x=sorted(list(bull_dates)), y=df_f.loc[sorted(list(bull_dates)), 'Close'], mode='markers', 
+                                                              marker=dict(symbol='triangle-up', size=12, color='lime'), name='Bull Break'), row=1, col=1)
+                            if bear_dates:
+                                fig_res.add_trace(go.Scatter(x=sorted(list(bear_dates)), y=df_f.loc[sorted(list(bear_dates)), 'Close'], mode='markers', 
+                                                              marker=dict(symbol='triangle-down', size=12, color='red'), name='Bear Break'), row=1, col=1)
 
-                    st.plotly_chart(fig_regime, use_container_width=True)
+                            # Panel 2: RSI + Markers
+                            fig_res.add_trace(go.Scatter(x=df_f.index, y=df_f['RSI'], name='RSI', line=dict(color='#FF6D00'), fill='tozeroy'), row=2, col=1)
+                            if bull_rsi_dates:
+                                fig_res.add_trace(go.Scatter(x=sorted(list(bull_rsi_dates)), y=df_f.loc[sorted(list(bull_rsi_dates)), 'RSI'], mode='markers', 
+                                                              marker=dict(symbol='triangle-up', size=10, color='cyan'), name='Bull RSI'), row=2, col=1)
+                            if bear_rsi_dates:
+                                fig_res.add_trace(go.Scatter(x=sorted(list(bear_rsi_dates)), y=df_f.loc[sorted(list(bear_rsi_dates)), 'RSI'], mode='markers', 
+                                                              marker=dict(symbol='triangle-down', size=10, color='magenta'), name='Bear RSI'), row=2, col=1)
+                            
+                            fig_res.add_hline(y=70, line_dash="dot", line_color="red", row=2, col=1)
+                            fig_res.add_hline(y=30, line_dash="dot", line_color="green", row=2, col=1)
 
-                    # --- RINGKASAN STATUS ---
-                    l_score = df_ta['net_regime_score'].iloc[-1]
-                    l_regime = df_ta['Regime'].iloc[-1]
-                    
-                    st.info(f"### Status Rezim: {l_regime} \nSkor Akhir: **{l_score:.1f}/100** (Struktur: {df_ta['score_structure'].iloc[-1]:.1f} | RSI: {df_ta['score_rsi'].iloc[-1]:.1f})")
+                            # Panel 3: Net Regime Score Line
+                            fig_res.add_trace(go.Scatter(x=df_f.index, y=df_f['net_score'], name='Net Score', line=dict(color='white', width=2), fill='tozeroy'), row=3, col=1)
+                            fig_res.add_hline(y=75, line_dash="dot", line_color="lime", row=3, col=1)
+                            fig_res.add_hline(y=-75, line_dash="dot", line_color="red", row=3, col=1)
 
-                    with st.expander("🔍 Audit Data Skor Harian"):
-                        st.dataframe(df_ta[['Close', 'score_structure', 'RSI_14', 'score_rsi', 'net_regime_score', 'Regime']].sort_index(ascending=False), use_container_width=True)
+                            fig_res.update_layout(height=900, hovermode="x unified", template="plotly_dark")
+                            st.plotly_chart(fig_res, use_container_width=True)
 
-                except Exception as e:
-                    st.error(f"Terjadi kesalahan komputasi rezim: {e}")
-                
-        else:
-            st.info("Silakan pilih instrumen dari dropdown di atas untuk memulai analisis.")
-       
+                        except Exception as e:
+                            st.error(f"Gagal memuat grafik detail: {e}")
+                            
+            elif not bos_lengths:
+                st.warning("Silakan ketik atau pilih minimal satu rentang pivot.")
     
     #==================== TAB 6: GRAFIK OBLIGASI NEGARA ====================
     with tab_gov_bonds:
