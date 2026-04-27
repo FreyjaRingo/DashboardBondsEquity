@@ -125,26 +125,59 @@ def fetch_from_supabase(table_name, id_col, tickers, start_date, end_date):
     return df
 
 # ==================== FUNGSI INISIALISASI SESI REFINITIV ====================
-def init_refinitiv_session(silent=False):
-    """Hanya membuka sesi Refinitiv tanpa menarik data RFR awal."""
+_global_refinitiv_password = None
+
+def init_refinitiv_session(silent=False, password=None):
+    """Membuka sesi Refinitiv dengan proteksi deteksi password salah."""
+    global _global_refinitiv_password
+    if password:
+        _global_refinitiv_password = password
+        
+    use_password = password or _global_refinitiv_password
+    
+    if not use_password:
+        if not silent:
+            st.warning("⚠️ Password Refinitiv belum diinput.")
+        else:
+            print("Gagal membuka sesi Refinitiv (CRON): Password kosong")
+        return False
+
     try:
         config = st.secrets["refinitiv"]
         session = rd.session.platform.Definition(
             app_key=config["app_key"],
             grant=rd.session.platform.GrantPassword(
                 username=config["username"],
-                password=config["password"]
+                password=use_password
             )
         ).get_session()
         
         session.open()
+        
+        # Proteksi Lapis 1: Jika status session langsung "Closed" sesaat usai dibuka
+        if session.open_state.name == "Closed":
+            if not silent: 
+                st.error("❌ Akses Ditolak: Password yang Anda masukkan salah atau kredensial kedaluwarsa.")
+            # Reset cache password global jika gagal
+            _global_refinitiv_password = None
+            return False
+            
         rd.session.set_default(session)
         return True
+        
     except Exception as e:
+        error_msg = str(e).lower()
         if not silent:
-            st.error(f"Gagal membuka sesi Refinitiv: {e}")
+            # Proteksi Lapis 2: Tangkap error lemparan dari API Refinitiv / sistem HTTPX
+            if "401" in error_msg or "400" in error_msg or "invalid_grant" in error_msg or "unauthorized" in error_msg or "password" in error_msg:
+                st.error("❌ Autentikasi Gagal: Password Refinitiv salah.")
+            else:
+                st.error(f"❌ Terjadi kesalahan jaringan / API Refinitiv: {e}")
         else:
             print(f"Gagal membuka sesi Refinitiv (CRON): {e}")
+            
+        # Reset cache password global agar tidak terkunci di state memori yang salah
+        _global_refinitiv_password = None
         return False
 
 # ==================== FUNGSI DELTA SYNC (SINKRONISASI HARIAN) ====================
@@ -1002,23 +1035,36 @@ with st.sidebar:
         # ==========================================
         st.subheader("Koneksi & Update Data")
         
-        # Indikator Status Koneksi API
+        # 1. Gunakan st.empty() sebagai wadah penampung dinamis
+        status_indicator = st.empty()
+        
         if st.session_state.connected:
-            st.success("Terhubung ke API Refinitiv")
+            status_indicator.success("Terhubung ke API Refinitiv")
         else:
-            st.warning("API Refinitiv Belum Terhubung")
+            status_indicator.warning("API Refinitiv Belum Terhubung")
+            
+        ref_password_input = st.text_input("Password Refinitiv", type="password", help="Masukkan password untuk Refinitiv Workspace")
     
         col_btn1, col_btn2 = st.columns(2)
         
         with col_btn1:
             # 1. TOMBOL KONEKSI
             if st.button("Connect", use_container_width=True):
-                with st.spinner("Menghubungkan..."):
-                    if init_refinitiv_session():
-                        st.session_state.connected = True
+                with st.spinner("Mengevaluasi kredensial..."):
+                    # 2. Tangkap hasil dari fungsi (True / False)
+                    is_connected = init_refinitiv_session(password=ref_password_input)
+                    
+                    # 3. Timpa memori sistem secara eksplisit
+                    st.session_state.connected = is_connected
+                    
+                    # 4. Ubah indikator di atas secara instan tanpa perlu memuat ulang seluruh halaman
+                    if is_connected:
+                        status_indicator.success("Terhubung ke API Refinitiv")
+                        time.sleep(1) # Beri jeda 1 detik agar hijau sukses terlihat
                         st.rerun()
                     else:
-                        st.error("Koneksi gagal.")
+                        status_indicator.warning("API Refinitiv Belum Terhubung")
+                        # Tidak ada st.rerun() di sini agar st.error("Autentikasi Gagal") tetap tayang di layar
                         
         with col_btn2:
             # 2. TOMBOL UPDATE DATA (Aktif hanya jika sudah connect)
