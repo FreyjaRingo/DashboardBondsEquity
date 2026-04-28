@@ -1649,8 +1649,8 @@ def render_main_dashboard():
                     if last_rsi > hi_r: is_bull_rsi = True
                     if last_rsi < lo_r: is_bear_rsi = True
 
-                stat_nav = "Bullish BoS 🟢" if is_bull_nav else ("Bearish BoS 🔴" if is_bear_nav else "-")
-                stat_rsi = "Bullish BoS 🟢" if is_bull_rsi else ("Bearish BoS 🔴" if is_bear_rsi else "-")
+                stat_nav = "BoS 🟢" if is_bull_nav else ("BoS 🔴" if is_bear_nav else "-")
+                stat_rsi = "BoS 🟢" if is_bull_rsi else ("BoS 🔴" if is_bear_rsi else "-")
 
                 # 3. Filter: Hanya tampilkan produk yang memiliki aktivitas BoS di salah satu indikator
                 if stat_nav != "-" or stat_rsi != "-":
@@ -1710,7 +1710,7 @@ def render_main_dashboard():
                 if not liquidity_series.empty and (liquidity_series != 0).any():
                     st.subheader(f"Likuiditas: {selected_bench_label}")
                     st.caption(f"Volume perdagangan untuk **{selected_bench_label}**.")
-                    fig_liq = px.line(
+                    fig_liq = px.bar(
                         x=liquidity_series.index, 
                         y=liquidity_series.values
                     )
@@ -1722,7 +1722,7 @@ def render_main_dashboard():
                         height=300
                     )
                     fig_liq.update_traces(
-                        line_color='rgba(255, 165, 0, 0.8)'
+                        marker_color='rgba(255, 165, 0, 0.8)'
                     )
                     st.plotly_chart(fig_liq, use_container_width=True)
 
@@ -1865,6 +1865,8 @@ def render_main_dashboard():
                 mi_set.add("BNP Paribas")
             elif name.startswith("Eastspring"): 
                 mi_set.add("Eastspring")
+            elif name.startswith("TRIM") or name.startswith("Trimegah"): 
+                mi_set.add("Trimegah")
             else: 
                 mi_set.add(name.split()[0]) # Ambil kata pertama (Maybank, Schroder, Batavia, dll)
             
@@ -1900,11 +1902,17 @@ def render_main_dashboard():
     
         # --- 4. Eksekusi Pemotongan Kolom Berdasarkan MI ---
         if filter_mi1 != "Semua":
-            cols_to_keep = [c for c in df_grup1.columns if c.startswith(filter_mi1)]
+            if filter_mi1 == "Trimegah":
+                cols_to_keep = [c for c in df_grup1.columns if c.startswith("Trimegah") or c.startswith("TRIM")]
+            else:
+                cols_to_keep = [c for c in df_grup1.columns if c.startswith(filter_mi1)]
             df_grup1 = df_grup1[cols_to_keep]
         
         if filter_mi2 != "Semua" and grup2 in ["Equity", "Fixed Income"]:
-            cols_to_keep = [c for c in df_grup2.columns if c.startswith(filter_mi2)]
+            if filter_mi2 == "Trimegah":
+                cols_to_keep = [c for c in df_grup2.columns if c.startswith("Trimegah") or c.startswith("TRIM")]
+            else:
+                cols_to_keep = [c for c in df_grup2.columns if c.startswith(filter_mi2)]
             df_grup2 = df_grup2[cols_to_keep]
 
         # --- 5. Kalkulasi Return & Matriks ---
@@ -2314,24 +2322,42 @@ def render_main_dashboard():
         - **Volatility Bands (Standard Deviation Bands):** Memvisualisasikan area kewajaran harga. Harga yang menyentuh pita atas (+2 atau +3 SD) mengindikasikan area jenuh beli (*Overbought*/Mahal), sedangkan sentuhan di pita bawah (-2 atau -3 SD) menunjukkan jenuh jual (*Oversold*/Murah).
         - **Pergerakan Metrik Harian (Rolling):** Memantau tren perubahan metrik **Alpha, Beta (terhadap {selected_benchmark_label}), Sharpe Ratio, dan Volatilitas** secara dinamis dari hari ke hari, berguna untuk melihat apakah kinerja manajer investasi konsisten atau hanya kebetulan di satu waktu.""")
     
-        # --- Filter Manajer Investasi (MI) ---
-        all_instruments_list = df_all_instruments.columns.tolist()
+        # --- Filter Grup Produk & Manajer Investasi (MI) ---
+        col_hist_f1, col_hist_f2 = st.columns([1, 2])
+        with col_hist_f1:
+            grup_produk_hist = st.selectbox("Pilih Grup Produk:", options=["Semua", "Equity", "Fixed Income"], key="hist_grup_produk")
+            
+        if grup_produk_hist == "Equity":
+            all_instruments_list = df_equity.columns.tolist()
+        elif grup_produk_hist == "Fixed Income":
+            all_instruments_list = df_bond.columns.tolist()
+        else:
+            all_instruments_list = df_all_instruments.columns.tolist()
+            
         mi_set = set()
         for name in all_instruments_list:
             if name.startswith("BNP Paribas"): mi_set.add("BNP Paribas")
             elif name.startswith("Eastspring"): mi_set.add("Eastspring")
+            elif name.startswith("TRIM") or name.startswith("Trimegah"): mi_set.add("Trimegah")
             else: mi_set.add(name.split()[0])
             
         mi_list_filter = sorted(list(mi_set))
         
-        selected_mi_filters = st.multiselect(
-            "🔍 Filter Berdasarkan Manajer Investasi (Kosongkan untuk tampilkan semua MI):",
-            options=mi_list_filter,
-            key="hist_mi_filter"
-        )
+        with col_hist_f2:
+            selected_mi_filters = st.multiselect(
+                "🔍 Filter Berdasarkan Manajer Investasi (Kosongkan untuk tampilkan semua MI):",
+                options=mi_list_filter,
+                key="hist_mi_filter"
+            )
         
         if selected_mi_filters:
-            available_instruments = [c for c in all_instruments_list if any(c.startswith(mi) for mi in selected_mi_filters)]
+            def match_mi(c, selected_filters):
+                for mi in selected_filters:
+                    if mi == "Trimegah" and (c.startswith("Trimegah") or c.startswith("TRIM")): return True
+                    elif c.startswith(mi): return True
+                return False
+            
+            available_instruments = [c for c in all_instruments_list if match_mi(c, selected_mi_filters)]
             default_selection = available_instruments # Semua produk dari MI tersebut langsung terpilih
         else:
             available_instruments = all_instruments_list
@@ -2433,14 +2459,19 @@ def render_main_dashboard():
                     "Interval Rolling Grafik (Hari Bursa):", 
                     min_value=5, max_value=1260, value=252, step=1, key="vol_band_period"
                 )
-                # Fitur pemilihan SD Dinamis (Ketik/Pilih)
-                selected_sd = st.multiselect(
-                    "Pilih Level Standard Deviation yang ditampilkan:",
-                    options=[1, 2, 3, 4, 5, 6],
-                    default=[1, 2, 3],
-                    help="Ketik angka 1-6 atau pilih dari daftar. Secara otomatis menampilkan 1, 2, dan 3 SD.",
-                    key="sd_level_select"
-                )
+                # Fitur pemilihan SD Dinamis (Tabel Pengaturan)
+                st.markdown("<p style='margin-bottom: 5px;'>Level Standard Deviation:</p>", unsafe_allow_html=True)
+                selected_sd = []
+                for i, default_val in enumerate([1.0, 2.0, 3.0]):
+                    cc1, cc2 = st.columns([1, 2])
+                    with cc1:
+                        st.markdown(f"<p style='margin-top: 8px;'>Garis Risk {i+1}</p>", unsafe_allow_html=True)
+                    with cc2:
+                        val = st.number_input(f"SD {i+1}", value=default_val, step=0.1, label_visibility="collapsed", key=f"sd_{i}")
+                        if val > 0:
+                            selected_sd.append(val)
+                # Hilangkan duplikat dan urutkan
+                selected_sd = sorted(list(set(selected_sd)))
             with col_vb2:
                 chart_theme = st.radio("Tema Visual Grafik:", ["Dark Theme", "Light Theme"], horizontal=True, key="band_theme_radio")
 
@@ -2496,7 +2527,8 @@ def render_main_dashboard():
                     upper = safe_slice(u_full, ana_start_dt, ana_end_dt)
                     lower = safe_slice(l_full, ana_start_dt, ana_end_dt)
                     
-                    color = sd_colors.get(sd, 'gray')
+                    # Gunakan round() untuk pendekatan integer terdekat ke warna yang tersedia
+                    color = sd_colors.get(round(sd), 'gray')
                     
                     fig_band.add_trace(go.Scatter(x=upper.index, y=upper, mode='lines', name=f'+{sd} SD', line=dict(color=color, width=1, dash='dash')))
                     fig_band.add_trace(go.Scatter(x=lower.index, y=lower, mode='lines', name=f'-{sd} SD', line=dict(color=color, width=1, dash='dash')))
@@ -2577,7 +2609,7 @@ def render_main_dashboard():
                 # Menggunakan multiselect agar bisa diketik dan dipilih banyak sekaligus (maksimal 60)
                 bos_lengths = st.multiselect(
                     "Rentang Pivot BoS (Hari):", 
-                    options=list(range(2, 61)), 
+                    options=list(range(1, 61)), 
                     default=[5, 7, 10], 
                     key="bos_len_v5",
                     help="Ketik angka (maksimal 60) atau pilih dari daftar. Bisa memilih lebih dari satu rentang."
@@ -2719,14 +2751,8 @@ def render_main_dashboard():
                                 fig_res.add_trace(go.Scatter(x=sorted(list(bear_dates)), y=df_f.loc[sorted(list(bear_dates)), 'Close'], mode='markers', 
                                                               marker=dict(symbol='triangle-down', size=12, color='red'), name='Bear Break'), row=1, col=1)
 
-                            # Panel 2: RSI + Markers
+                            # Panel 2: RSI
                             fig_res.add_trace(go.Scatter(x=df_f.index, y=df_f['RSI'], name='RSI', line=dict(color='#FF6D00'), fill='tozeroy'), row=2, col=1)
-                            if bull_rsi_dates:
-                                fig_res.add_trace(go.Scatter(x=sorted(list(bull_rsi_dates)), y=df_f.loc[sorted(list(bull_rsi_dates)), 'RSI'], mode='markers', 
-                                                              marker=dict(symbol='triangle-up', size=10, color='cyan'), name='Bull RSI'), row=2, col=1)
-                            if bear_rsi_dates:
-                                fig_res.add_trace(go.Scatter(x=sorted(list(bear_rsi_dates)), y=df_f.loc[sorted(list(bear_rsi_dates)), 'RSI'], mode='markers', 
-                                                              marker=dict(symbol='triangle-down', size=10, color='magenta'), name='Bear RSI'), row=2, col=1)
                             
                             fig_res.add_hline(y=70, line_dash="dot", line_color="red", row=2, col=1)
                             fig_res.add_hline(y=30, line_dash="dot", line_color="green", row=2, col=1)
