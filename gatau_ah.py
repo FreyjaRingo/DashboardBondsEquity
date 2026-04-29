@@ -378,7 +378,7 @@ if 'is_admin' not in st.session_state:
 try:
     pg = st.navigation([
         st.Page(set_admin_false, title="Umum", url_path="umum"),
-        st.Page(set_admin_true, title="Admin", url_path="AsepKnalpot")
+        st.Page(set_admin_true, title="Admin", url_path="Host")
     ], position="hidden")
     pg.run()
 except Exception as e:
@@ -1094,7 +1094,10 @@ with st.sidebar:
         
         # Manajemen Produk Kustom (hanya untuk IDR)
        # ==========================================
-    if st.session_state.is_admin:
+    if st.session_state.is_admin and not st.session_state.connected:
+        st.warning("Silakan hubungkan API Refinitiv (masukkan password) terlebih dahulu untuk mengakses fitur Manajemen Database (CRUD).")
+        
+    if st.session_state.is_admin and st.session_state.connected:
         # ==========================================
         # MANAJEMEN INSTRUMEN (CRUD & AUTO-BACKFILL)
         # ==========================================
@@ -2810,46 +2813,34 @@ def render_main_dashboard():
             
                 st.divider()
                 # --- PANEL KONTROL WAKTU ---
-                st.subheader("Kontrol Rentang & Jarak Waktu")
+                st.subheader("Kontrol Rentang Waktu")
                 col_t1, col_t2 = st.columns(2)
                 with col_t1:
-                    interval_mapping = {
-                        "Harian (1D)": "1D", "5 Hari (5D)": "5D", "10 Hari (10D)": "10D",
-                        "1 Bulan (1M)": "1M", "3 Bulan (3M)": "3M", "6 Bulan (6M)": "6M",
-                        "1 Tahun (1Y)": "1Y", "3 Tahun (3Y)": "3Y", "5 Tahun (5Y)": "5Y",
-                        "10 Tahun (10Y)": "10Y"
-                    }
-                    selected_label_gran = st.selectbox("Interval Grafik Mentah :", list(interval_mapping.keys()), index=0, key="bond_granularity")
-                    gran_code = interval_mapping[selected_label_gran]
+                    time_options = {"YTD": "YTD", "1 Bulan": "1M", "3 Bulan": "3M", "6 Bulan": "6M", "1 Tahun": "1Y", "2 Tahun": "2Y", "3 Tahun": "3Y", "5 Tahun": "5Y", "Semua (Sesuai Cut-off)": "ALL"}
+                    selected_label_raw = st.selectbox("Rentang Waktu Grafik Mentah & Yield:", list(time_options.keys()), index=8, key="bond_raw_time")
+                    raw_time_code = time_options[selected_label_raw]
                 
                 with col_t2:
-                    yield_options = {"YTD": "YTD", "1 Bulan": "1M", "3 Bulan": "3M", "6 Bulan": "6M", "1 Tahun": "1Y", "2 Tahun": "2Y", "3 Tahun": "3Y", "5 Tahun": "5Y"}
+                    yield_options = {"YTD": "YTD", "1 Bulan": "1M", "3 Bulan": "3M", "6 Bulan": "6M", "1 Tahun": "1Y", "2 Tahun": "2Y", "3 Tahun": "3Y", "5 Tahun": "5Y", "Semua (Sesuai Cut-off)": "ALL"}
                     selected_label_rebase = st.selectbox("Rentang Waktu Grafik Persentase (Rebasing):", list(yield_options.keys()), index=4, key="bond_rebase")
                     rebase_code = yield_options[selected_label_rebase]
 
                 # --- FUNGSI PEMBANTU (HELPER FUNCTIONS) ---
-                def apply_granularity(df, code):
-                    if df.empty or code == "1D": return df
-                    if code == "5D": return df.iloc[::-5][::-1]
-                    if code == "10D": return df.iloc[::-10][::-1]
-                
-                    resample_new = {"1M": "ME", "3M": "3ME", "6M": "6ME", "1Y": "YE", "3Y": "3YE", "5Y": "5YE", "10Y": "10YE"}
-                    resample_old = {"1M": "M", "3M": "3M", "6M": "6M", "1Y": "Y", "3Y": "3Y", "5Y": "5Y", "10Y": "10Y"}
-                    try: return df.resample(resample_new[code]).last().dropna(how='all')
-                    except: return df.resample(resample_old[code]).last().dropna(how='all')
+                def slice_by_time_range(df, time_code):
+                    if df.empty or time_code == "ALL": return df
+                    latest_date = df.index.max()
+                    if time_code == "YTD": start_date = pd.Timestamp(latest_date.year, 1, 1)
+                    elif "M" in time_code: start_date = latest_date - pd.DateOffset(months=int(time_code.replace("M", "")))
+                    elif "Y" in time_code: start_date = latest_date - pd.DateOffset(years=int(time_code.replace("Y", "")))
+                    else: start_date = df.index.min()
+                    return df.loc[start_date:latest_date].copy()
 
                 def apply_rebasing(df, y_code):
-                    if df.empty: return pd.DataFrame()
-                    latest_date = df.index.max()
-                    if y_code == "YTD": start_date = pd.Timestamp(latest_date.year, 1, 1)
-                    elif "M" in y_code: start_date = latest_date - pd.DateOffset(months=int(y_code.replace("M", "")))
-                    elif "Y" in y_code: start_date = latest_date - pd.DateOffset(years=int(y_code.replace("Y", "")))
-                    else: start_date = df.index.min()
-
-                    df_sliced = df.loc[start_date:latest_date].copy()
+                    df_sliced = slice_by_time_range(df, y_code)
+                    if df_sliced.empty: return pd.DataFrame()
                     df_rebased = pd.DataFrame(index=df_sliced.index)
                 
-                    if not df_sliced.empty and len(df_sliced) > 1:
+                    if len(df_sliced) > 1:
                         for col in df_sliced.columns:
                             # Cari tanggal pertama obligasi ini memiliki data (bukan NaN)
                             first_valid_idx = df_sliced[col].first_valid_index()
@@ -2893,13 +2884,12 @@ def render_main_dashboard():
                 st.divider()
                 st.subheader("Analisis Harga Obligasi (Ask Price)")
             
-                tab_p1, tab_p2 = st.tabs(["1. Harga Mentah (Granularitas)", "2. Persentase Kenaikan (Rebasing)"])
+                tab_p1, tab_p2 = st.tabs(["1. Harga Mentah", "2. Persentase Kenaikan (Rebasing)"])
             
                 with tab_p1:
-                    df_p_gran = apply_granularity(df_price_raw, gran_code)
-                    fig_p1 = px.line(df_p_gran, x=df_p_gran.index, y=df_p_gran.columns, title=f"Harga Aktual - Interval {selected_label_gran}")
-                    if gran_code != "1D": fig_p1.update_traces(mode='lines+markers')
-                    fig_p1 = add_end_annotations(fig_p1, df_p_gran, is_percent=False)
+                    df_p_raw_sliced = slice_by_time_range(df_price_raw, raw_time_code)
+                    fig_p1 = px.line(df_p_raw_sliced, x=df_p_raw_sliced.index, y=df_p_raw_sliced.columns, title=f"Harga Aktual - Rentang Waktu: {selected_label_raw}")
+                    fig_p1 = add_end_annotations(fig_p1, df_p_raw_sliced, is_percent=False)
                     fig_p1.update_layout(xaxis_title="Tanggal", yaxis_title="Ask Price", yaxis=dict(side='right'), legend=legend_layout_gov, hovermode="x unified", height=900)
                     st.plotly_chart(fig_p1, use_container_width=True)
 
@@ -2922,11 +2912,10 @@ def render_main_dashboard():
                 st.subheader("Analisis Imbal Hasil (Ask Yield)")
             
                 if not df_yield_raw.empty:
-                    df_y_gran = apply_granularity(df_yield_raw, gran_code)
-                    fig_y1 = px.line(df_y_gran, x=df_y_gran.index, y=df_y_gran.columns, title=f"Yield Aktual (%) - Interval {selected_label_gran}")
-                    if gran_code != "1D": fig_y1.update_traces(mode='lines+markers')
+                    df_y_raw_sliced = slice_by_time_range(df_yield_raw, raw_time_code)
+                    fig_y1 = px.line(df_y_raw_sliced, x=df_y_raw_sliced.index, y=df_y_raw_sliced.columns, title=f"Yield Aktual (%) - Rentang Waktu: {selected_label_raw}")
                     fig_y1.update_yaxes(ticksuffix="%")
-                    fig_y1 = add_end_annotations(fig_y1, df_y_gran, is_percent=True)
+                    fig_y1 = add_end_annotations(fig_y1, df_y_raw_sliced, is_percent=True)
                     fig_y1.update_layout(xaxis_title="Tanggal", yaxis_title="Ask Yield (%)", yaxis=dict(side='right'), legend=legend_layout_gov, hovermode="x unified", height=900)
                     st.plotly_chart(fig_y1, use_container_width=True)
                 else:
