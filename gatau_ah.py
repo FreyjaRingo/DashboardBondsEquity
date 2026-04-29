@@ -962,6 +962,18 @@ def validate_ticker(ticker, product_type):
     except:
         return False
 
+def get_instrument_launch_date(ticker, field):
+    """Ambil tanggal rilis/terbit dari Refinitiv secara otomatis"""
+    try:
+        df = rd.get_data(universe=[ticker], fields=[field])
+        if not df.empty and pd.notna(df[field].iloc[0]):
+            raw_val = df[field].iloc[0]
+            # Convert ke string YYYY-MM-DD
+            return str(pd.to_datetime(raw_val).date())
+        return "2000-01-01"
+    except:
+        return "2000-01-01"
+
 # ==================== GLOBAL CACHE REGISTRY ====================
 @st.cache_resource
 def get_global_cache_registry():
@@ -1111,11 +1123,10 @@ with st.sidebar:
                 mf_name = st.text_input("Nama Reksa Dana")
                 mf_type = st.selectbox("Fund Type", ["Equity", "Fixed Income"])
                 mf_curr = st.selectbox("Mata Uang", ["IDR", "USD"], key="mf_c")
-                mf_release_date = st.date_input("Tanggal Rilis Produk", value=dt.date(2024, 1, 1), help="Sistem akan menarik data mulai dari tanggal ini.")
                 
                 if st.form_submit_button("Tambah & Tarik Data"):
                     if mf_ticker and mf_name:
-                        with st.spinner(f"Menarik Historis dari {mf_release_date.strftime('%Y')}..."):
+                        with st.spinner("Menarik Historis..."):
                             max_retries = 3
                             for attempt in range(max_retries):
                                 try:
@@ -1124,10 +1135,14 @@ with st.sidebar:
                                         
                                     if st.session_state.connected:
                                         if validate_ticker(mf_ticker, "MF"):
+                                            # Ambil Launch Date
+                                            launch_date_str = get_instrument_launch_date(mf_ticker, "TR.FundLaunchDate")
+                                            st.info(f"Mulai menarik data dari tanggal rilis terdeteksi: {launch_date_str}")
+                                            
                                             supabase.table("mf_instruments").upsert([{"ticker": mf_ticker, "name": mf_name, "fund_type": mf_type, "currency": mf_curr}]).execute()
                                             
                                             # Inject Start Date dinamis
-                                            success = backfill_new_instrument("mf_nav_daily", "ticker", mf_ticker, ['TR.NETASSETVAL.date', 'TR.NETASSETVAL'], ["nav"], {'Instrument': 'ticker', 'Date': 'date', 'TR.NETASSETVAL.date': 'date', 'TR.NETASSETVAL': 'nav', 'Net Asset Value': 'nav'}, start_date_str=mf_release_date.strftime('%Y-%m-%d'))
+                                            success = backfill_new_instrument("mf_nav_daily", "ticker", mf_ticker, ['TR.NETASSETVAL.date', 'TR.NETASSETVAL'], ["nav"], {'Instrument': 'ticker', 'Date': 'date', 'TR.NETASSETVAL.date': 'date', 'TR.NETASSETVAL': 'nav', 'Net Asset Value': 'nav'}, start_date_str=launch_date_str)
                                             
                                             load_master_instruments.clear()
                                             load_all_data.clear()
@@ -1156,7 +1171,6 @@ with st.sidebar:
                 bond_isin = st.text_input("ISIN Code / Ticker", placeholder="Contoh: IDFR0100=")
                 bond_name = st.text_input("Nama Obligasi", placeholder="Contoh: FR100")
                 bond_curr = st.selectbox("Mata Uang", ["IDR", "USD"], key="bd_c")
-                bond_release_date = st.date_input("Tanggal Rilis Obligasi", value=dt.date(2024, 1, 1))
                 
                 if st.form_submit_button("Tambah & Tarik Data"):
                     if bond_isin and bond_name:
@@ -1165,10 +1179,14 @@ with st.sidebar:
                                 st.session_state.connected = init_refinitiv_session()
                                 
                             if st.session_state.connected:
+                                # Ambil Issue Date
+                                issue_date_str = get_instrument_launch_date(bond_isin, "ISSUE_DATE")
+                                st.info(f"Mulai menarik data dari tanggal terbit terdeteksi: {issue_date_str}")
+                                
                                 supabase.table("gov_bonds_instruments").upsert([{"isin_code": bond_isin, "name": bond_name, "currency": bond_curr}]).execute()
                                 
                                 # Inject Start Date dinamis
-                                success = backfill_new_instrument("gov_bonds_prices_daily", "isin_code", bond_isin, ['TR.ASKPRICE.date', 'TR.ASKPRICE', 'TR.BIDYIELD'], ["ask_price", "ask_yield"], {'Instrument': 'isin_code', 'Date': 'date', 'Ask Price': 'ask_price', 'Bid Yield': 'ask_yield', 'TR.ASKPRICE.date': 'date', 'TR.ASKPRICE': 'ask_price', 'TR.BIDYIELD': 'ask_yield'}, start_date_str=bond_release_date.strftime('%Y-%m-%d'))
+                                success = backfill_new_instrument("gov_bonds_prices_daily", "isin_code", bond_isin, ['TR.ASKPRICE.date', 'TR.ASKPRICE', 'TR.BIDYIELD'], ["ask_price", "ask_yield"], {'Instrument': 'isin_code', 'Date': 'date', 'Ask Price': 'ask_price', 'Bid Yield': 'ask_yield', 'TR.ASKPRICE.date': 'date', 'TR.ASKPRICE': 'ask_price', 'TR.BIDYIELD': 'ask_yield'}, start_date_str=issue_date_str)
                                 
                                 load_master_instruments.clear()
                                 load_all_data.clear()
