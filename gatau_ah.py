@@ -2791,6 +2791,138 @@ def render_main_dashboard():
                             
             elif not bos_lengths:
                 st.warning("Silakan ketik atau pilih minimal satu rentang pivot.")
+                
+            # =====================================================================
+            # 6. HEATMAP KINERJA BULANAN BENCHMARK
+            # =====================================================================
+            st.divider()
+            st.subheader("📊 Heatmap Kinerja Bulanan Benchmark")
+            st.caption("Menampilkan peta panas (heatmap) persentase return bulanan dan akumulasi tahunan untuk instrumen acuan yang dipilih.")
+
+            benchmark_options_heat = {
+                'IHSG (.JKSE)': '.JKSE', 'LQ45 (.JKLQ45)': '.JKLQ45', 'IDX30': '.JKIDX30', 
+                'IDX80': '.JKIDX80', 'NASDAQ (.IXIC)': '.IXIC', 'S&P 500 (.SPX)': '.SPX', 
+                'Dow Jones (.DJI)': '.DJI', 'Shanghai (.SSEC)': '.SSEC', 'DXY Index': '.DXY', 
+                'Kurs IDR': 'IDR=', 'Crude Oil (CLc1)': 'CLc1', 
+                'IDR 10Y Yield': 'ID10YT=RR', 'US 10Y Yield': 'US10YT=RR'
+            }
+            
+            selected_bench_heat_label = st.selectbox("Pilih Benchmark untuk Heatmap:", list(benchmark_options_heat.keys()), key="heatmap_benchmark_select")
+            selected_bench_heat_ticker = benchmark_options_heat[selected_bench_heat_label]
+            
+            # Ambil data benchmark full
+            bench_heat_series = get_benchmark_series(selected_bench_heat_ticker, full_dfs_dict)
+            
+            if not bench_heat_series.empty:
+                with st.spinner("Mengkalkulasi Heatmap..."):
+                    try:
+                        # Buat copy dan bersihkan index timezone jika ada
+                        bh_series = bench_heat_series.dropna().copy()
+                        bh_series.index = pd.to_datetime(bh_series.index).tz_localize(None)
+                        
+                        # Resample bulanan
+                        try:
+                            monthly_prices = bh_series.resample('ME').last()
+                        except:
+                            monthly_prices = bh_series.resample('M').last()
+                            
+                        monthly_prices = monthly_prices.dropna()
+                        monthly_returns = monthly_prices.pct_change()
+                        
+                        df_heat = pd.DataFrame({
+                            'Year': monthly_returns.index.year,
+                            'Month': monthly_returns.index.month,
+                            'Return': monthly_returns.values
+                        })
+                        
+                        pivot_heat = df_heat.pivot(index='Year', columns='Month', values='Return')
+                        
+                        month_names = {1: 'January', 2: 'February', 3: 'March', 4: 'April', 5: 'May', 6: 'June', 7: 'July', 8: 'August', 9: 'September', 10: 'October', 11: 'November', 12: 'December'}
+                        pivot_heat = pivot_heat.rename(columns=month_names)
+                        
+                        for m in month_names.values():
+                            if m not in pivot_heat.columns:
+                                pivot_heat[m] = np.nan
+                                
+                        pivot_heat = pivot_heat[list(month_names.values())]
+                        
+                        # Menghitung Total Return per tahun (YTD) menggunakan harga riil
+                        total_ret_dict = {}
+                        years = pivot_heat.index.unique()
+                        for y in years:
+                            prices_this_year = bh_series[bh_series.index.year <= y].dropna()
+                            if len(prices_this_year) > 0:
+                                last_price = prices_this_year.iloc[-1]
+                                
+                                prices_prev_year = bh_series[bh_series.index.year < y].dropna()
+                                if len(prices_prev_year) > 0:
+                                    prev_price = prices_prev_year.iloc[-1]
+                                    total_ret_dict[y] = (last_price / prev_price) - 1
+                                else:
+                                    # Tahun pertama
+                                    prices_y = bh_series[bh_series.index.year == y].dropna()
+                                    if len(prices_y) > 0:
+                                        first_price = prices_y.iloc[0]
+                                        total_ret_dict[y] = (last_price / first_price) - 1
+                                    else:
+                                        total_ret_dict[y] = np.nan
+                            else:
+                                total_ret_dict[y] = np.nan
+                    
+                        pivot_heat['Total Return'] = pivot_heat.index.map(total_ret_dict)
+                        pivot_heat = pivot_heat.dropna(how='all')
+                        
+                        # Hitung Average, Positive %, Negative %
+                        avg_row = pivot_heat.mean()
+                        
+                        pos_count = (pivot_heat > 0).sum()
+                        neg_count = (pivot_heat < 0).sum()
+                        total_count = pivot_heat.notna().sum()
+                        
+                        pos_pct = pos_count / total_count.replace(0, np.nan)
+                        neg_pct = neg_count / total_count.replace(0, np.nan)
+                        
+                        pivot_heat.loc['AVERAGE'] = avg_row
+                        pivot_heat.loc['POSITIVE %'] = pos_pct
+                        pivot_heat.loc['NEGATIVE %'] = neg_pct
+                        
+                        def highlight_cells(x):
+                            df_colors = pd.DataFrame('', index=x.index, columns=x.columns)
+                            for row in x.index:
+                                for col in x.columns:
+                                    val = x.loc[row, col]
+                                    if pd.isna(val):
+                                        continue
+                                    if row == 'AVERAGE':
+                                        if val > 0:
+                                            df_colors.loc[row, col] = 'background-color: #c8e6c9; color: #1b5e20; font-weight: bold;'
+                                        elif val < 0:
+                                            df_colors.loc[row, col] = 'background-color: #ffcdd2; color: #b71c1c; font-weight: bold;'
+                                        else:
+                                            df_colors.loc[row, col] = 'font-weight: bold;'
+                                    elif row == 'POSITIVE %':
+                                        df_colors.loc[row, col] = 'background-color: #ffe0b2; color: #e65100; font-weight: bold;'
+                                    elif row == 'NEGATIVE %':
+                                        df_colors.loc[row, col] = 'background-color: #ffcc80; color: #e65100; font-weight: bold;'
+                                    else:
+                                        if val > 0:
+                                            df_colors.loc[row, col] = 'background-color: #c8e6c9; color: #1b5e20;'
+                                        elif val < 0:
+                                            df_colors.loc[row, col] = 'background-color: #ffcdd2; color: #b71c1c;'
+                            return df_colors
+
+                        def format_pct(x):
+                            if pd.isna(x):
+                                return "-"
+                            return f"{x*100:.2f}%"
+
+                        styled_heat = pivot_heat.style.apply(highlight_cells, axis=None).format(format_pct)
+                        st.dataframe(styled_heat, use_container_width=True, height=600)
+
+                    except Exception as e:
+                        st.error(f"Gagal mengkalkulasi heatmap: {e}")
+            else:
+                st.warning("Data historis benchmark tidak tersedia.")
     
     #==================== TAB 6: GRAFIK OBLIGASI NEGARA ====================
     with tab_gov_bonds:
