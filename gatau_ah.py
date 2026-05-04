@@ -1553,7 +1553,7 @@ def render_main_dashboard():
         with col3:
             st.metric("Periode (Hari)", df_all_instruments.shape[0])
         with col4:
-            st.metric("Risk-Free Rate", f"{risk_free_rate*100:.2f}%")
+            st.metric("Risk-Free Rate (Ask Yield)", f"{risk_free_rate*100:.2f}%")
 
         st.subheader("Top 10 Produk (Skor Tertinggi & Riwayat Peringkat Skor 7 Hari)")
     
