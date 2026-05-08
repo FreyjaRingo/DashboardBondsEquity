@@ -1729,7 +1729,7 @@ def render_main_dashboard():
             if selected_benchmark_ticker in df_index_vol.columns:
                 liquidity_series = df_index_vol[selected_benchmark_ticker].dropna()
                 if not liquidity_series.empty and (liquidity_series != 0).any():
-                    st.subheader(f"Likuiditas: {selected_bench_label}")
+                    st.subheader(f"Volume: {selected_bench_label}")
                     st.caption(f"Volume perdagangan untuk **{selected_bench_label}**.")
                     fig_liq = px.bar(
                         x=liquidity_series.index, 
