@@ -1,5 +1,6 @@
 import concurrent.futures
 import datetime as dt
+import time
 
 import numpy as np
 import pandas as pd
@@ -214,26 +215,32 @@ def run_daily_sync(start_date, end_date, progress_callback=None, max_workers=4):
         return rd.get_data(universe=job["tickers"], fields=job["fields"], parameters=job["params"])
 
     uploaded_total = 0
-    failed_total = 0
     done_jobs = 0
+    retry_delay_seconds = 5
     workers = max(1, min(max_workers, total_jobs))
     report(0, total_jobs, f"Memulai {total_jobs} batch Refinitiv dengan {workers} worker...")
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
         future_to_job = {executor.submit(fetch_job, job): job for job in jobs}
-        for future in concurrent.futures.as_completed(future_to_job):
-            job = future_to_job[future]
-            done_jobs += 1
-            try:
-                df_raw = future.result()
-                uploaded = process_and_upload(df_raw, job["table"], job["value_cols"], job["mapping"])
-                uploaded_total += uploaded
-                report(done_jobs, total_jobs, f"Selesai {done_jobs}/{total_jobs}: {job['label']} ({uploaded} baris)")
-            except Exception as e:
-                failed_total += 1
-                report(done_jobs, total_jobs, f"Gagal {done_jobs}/{total_jobs}: {job['label']} - {e}")
+        while future_to_job:
+            for future in concurrent.futures.as_completed(list(future_to_job.keys())):
+                job = future_to_job.pop(future)
+                try:
+                    df_raw = future.result()
+                    uploaded = process_and_upload(df_raw, job["table"], job["value_cols"], job["mapping"])
+                    uploaded_total += uploaded
+                    done_jobs += 1
+                    report(done_jobs, total_jobs, f"Selesai {done_jobs}/{total_jobs}: {job['label']} ({uploaded} baris)")
+                except Exception as e:
+                    report(
+                        done_jobs,
+                        total_jobs,
+                        f"Batch gagal, ulang dalam {retry_delay_seconds} detik: {job['label']} - {e}"
+                    )
+                    time.sleep(retry_delay_seconds)
+                    future_to_job[executor.submit(fetch_job, job)] = job
 
-    return {"uploaded": uploaded_total, "failed": failed_total, "jobs": total_jobs}
+    return {"uploaded": uploaded_total, "failed": 0, "jobs": total_jobs}
 
 
 def backfill_new_instrument(table_dest, id_col, ticker, fields, value_cols, rename_mapping, start_date_str):
@@ -336,4 +343,3 @@ def get_instrument_launch_date(ticker, field):
         return "2000-01-01"
     except:
         return "2000-01-01"
-
