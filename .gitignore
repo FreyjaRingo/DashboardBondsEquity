@@ -1,1 +1,8 @@
-.streamlit
+.streamlit/secrets.toml
+.streamlit/backup.py
+backup.py
+__pycache__/
+*.pyc
+*.pyo
+.env
+.DS_Store
