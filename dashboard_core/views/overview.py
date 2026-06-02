@@ -1,11 +1,14 @@
 import datetime as dt
+import io
 import os
 import base64
 import numpy as np
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
+import pypdfium2 as pdfium
 import streamlit as st
+import streamlit.components.v1 as stc
 from plotly.subplots import make_subplots
 
 from dashboard_core.metrics import (
@@ -20,6 +23,127 @@ from dashboard_core.metrics import (
 )
 
 from .common import bind_context
+
+
+@st.cache_data(show_spinner=False)
+def render_pdf_pages_as_images(pdf_bytes, scale=1.7):
+    pdf = pdfium.PdfDocument(pdf_bytes)
+    pages = []
+
+    for page in pdf:
+        bitmap = page.render(scale=scale)
+        image = bitmap.to_pil()
+        buffer = io.BytesIO()
+        image.save(buffer, format="PNG")
+        pages.append(base64.b64encode(buffer.getvalue()).decode("utf-8"))
+
+    pdf.close()
+    return pages
+
+
+def render_pdf_image_viewer(page_images):
+    images_html = "\n".join(
+        f'<img class="pdf-page" src="data:image/png;base64,{page_image}" alt="Halaman PDF {idx}">'
+        for idx, page_image in enumerate(page_images, start=1)
+    )
+    viewer_height = min(900, max(520, len(page_images) * 240))
+
+    stc.html(
+        f"""
+        <div class="viewer-shell">
+            <div class="viewer-toolbar">
+                <button type="button" onclick="zoomOut()">-</button>
+                <span id="zoom-label">100%</span>
+                <button type="button" onclick="zoomIn()">+</button>
+                <button type="button" onclick="resetZoom()">Reset</button>
+            </div>
+            <div class="viewer-pages" id="viewer-pages">
+                {images_html}
+            </div>
+        </div>
+        <style>
+            .viewer-shell {{
+                background: #f5f6f8;
+                border: 1px solid #d9dee7;
+                border-radius: 8px;
+                font-family: Arial, sans-serif;
+                height: {viewer_height}px;
+                overflow: hidden;
+            }}
+            .viewer-toolbar {{
+                align-items: center;
+                background: #ffffff;
+                border-bottom: 1px solid #d9dee7;
+                display: flex;
+                gap: 10px;
+                padding: 10px 12px;
+                position: sticky;
+                top: 0;
+                z-index: 2;
+            }}
+            .viewer-toolbar button {{
+                background: #ffffff;
+                border: 1px solid #b8c0cc;
+                border-radius: 6px;
+                color: #182230;
+                cursor: pointer;
+                font-size: 14px;
+                min-width: 38px;
+                padding: 6px 10px;
+            }}
+            .viewer-toolbar button:hover {{
+                background: #edf2f7;
+            }}
+            #zoom-label {{
+                color: #182230;
+                font-size: 14px;
+                min-width: 48px;
+                text-align: center;
+            }}
+            .viewer-pages {{
+                height: calc(100% - 53px);
+                overflow: auto;
+                padding: 18px;
+                text-align: center;
+            }}
+            .pdf-page {{
+                background: #ffffff;
+                box-shadow: 0 2px 14px rgba(16, 24, 40, 0.16);
+                display: block;
+                margin: 0 auto 18px;
+                max-width: none;
+                transform-origin: top center;
+                width: min(100%, 980px);
+            }}
+        </style>
+        <script>
+            let zoom = 1;
+            const pages = document.querySelectorAll(".pdf-page");
+            const zoomLabel = document.getElementById("zoom-label");
+
+            function applyZoom() {{
+                pages.forEach((page) => {{
+                    page.style.width = `min(${{zoom * 100}}%, ${{980 * zoom}}px)`;
+                }});
+                zoomLabel.textContent = `${{Math.round(zoom * 100)}}%`;
+            }}
+            function zoomIn() {{
+                zoom = Math.min(2.5, zoom + 0.1);
+                applyZoom();
+            }}
+            function zoomOut() {{
+                zoom = Math.max(0.5, zoom - 0.1);
+                applyZoom();
+            }}
+            function resetZoom() {{
+                zoom = 1;
+                applyZoom();
+            }}
+        </script>
+        """,
+        height=viewer_height + 8,
+        scrolling=False,
+    )
 
 
 def render_overview(tab_overview, ctx):
@@ -330,12 +454,16 @@ def render_overview(tab_overview, ctx):
                 mime="application/pdf"
             )
             
-            # Streamlit tetap merender isi expander meski tertutup, jadi embed PDF
-            # dibuat hanya saat pengguna benar-benar meminta pratinjau.
+            # Render PDF sebagai gambar hanya saat pengguna meminta pratinjau,
+            # sehingga browser tidak perlu membuka file PDF langsung.
             if st.toggle("Tampilkan Pratinjau Dokumen PDF", value=False, key="show_nav_pdf_preview"):
-                base64_pdf = base64.b64encode(pdf_bytes).decode('utf-8')
-                pdf_display = f'<iframe src="data:application/pdf;base64,{base64_pdf}#toolbar=0" width="100%" height="600px" style="border: none;"></iframe>'
-                st.markdown(pdf_display, unsafe_allow_html=True)
+                with st.spinner("Merender halaman PDF..."):
+                    try:
+                        page_images = render_pdf_pages_as_images(pdf_bytes)
+                    except Exception as e:
+                        st.error(f"Gagal merender pratinjau PDF: {e}")
+                    else:
+                        render_pdf_image_viewer(page_images)
 
         else:
             # Pesan jika file belum diunggah sama sekali

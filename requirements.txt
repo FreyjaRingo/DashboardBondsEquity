@@ -11,4 +11,5 @@ plotly
 supabase
 postgrest
 pyindicators
+pypdfium2
 httpx==0.26.0
