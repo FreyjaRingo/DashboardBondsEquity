@@ -290,7 +290,12 @@ def render_overview(tab_overview, ctx):
         # ==================================================
         # 1. BAGIAN UPLOAD (KHUSUS ADMIN)
         # ==================================================
-        if st.session_state.get('is_admin', False):
+        is_authenticated_admin = (
+            st.session_state.get('is_admin', False)
+            and st.session_state.get('connected', False)
+        )
+
+        if is_authenticated_admin:
             st.info("Mode Admin: Unggah file PDF NAV harian di sini:")
             uploaded_file = st.file_uploader(
                 "Pilih file PDF", 
@@ -298,9 +303,15 @@ def render_overview(tab_overview, ctx):
                 key="upload_nav_pdf"
             )
             if uploaded_file:
-                with open(pdf_path, "wb") as f:
-                    f.write(uploaded_file.getbuffer())
-                st.success("File berhasil diunggah! NAV telah diperbarui.")
+                pdf_data = uploaded_file.getvalue()
+                if not pdf_data.startswith(b"%PDF"):
+                    st.error("File yang diupload bukan PDF valid.")
+                else:
+                    with open(pdf_path, "wb") as f:
+                        f.write(pdf_data)
+                    st.success("File berhasil diunggah! NAV telah diperbarui.")
+        elif st.session_state.get('is_admin', False):
+            st.info("Login admin diperlukan untuk mengunggah file PDF NAV harian.")
         
         # ==================================================
         # 2. BAGIAN MELIHAT & MENGUNDUH (UNTUK SEMUA PENGGUNA)
@@ -319,11 +330,11 @@ def render_overview(tab_overview, ctx):
                 mime="application/pdf"
             )
             
-            # Fungsi melihat pdf secara langsung via tag embed (Lebih stabil dari Iframe)
-            with st.expander("Lihat Pratinjau Dokumen PDF", expanded=False):
+            # Streamlit tetap merender isi expander meski tertutup, jadi embed PDF
+            # dibuat hanya saat pengguna benar-benar meminta pratinjau.
+            if st.toggle("Tampilkan Pratinjau Dokumen PDF", value=False, key="show_nav_pdf_preview"):
                 base64_pdf = base64.b64encode(pdf_bytes).decode('utf-8')
-                # Menggunakan <embed> dan menambahkan #toolbar=0 untuk mencegah auto-download
-                pdf_display = f'<object data="data:application/pdf;base64,{base64_pdf}#toolbar=0" type="application/pdf" width="100%" height="600px"></object>'
+                pdf_display = f'<iframe src="data:application/pdf;base64,{base64_pdf}#toolbar=0" width="100%" height="600px" style="border: none;"></iframe>'
                 st.markdown(pdf_display, unsafe_allow_html=True)
 
         else:

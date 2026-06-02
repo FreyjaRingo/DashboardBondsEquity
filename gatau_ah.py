@@ -85,7 +85,7 @@ if 'is_admin' not in st.session_state:
 try:
     pg = st.navigation([
         st.Page(set_admin_false, title="Umum", url_path="umum"),
-        st.Page(set_admin_true, title="Admin", url_path="Host")
+        st.Page(set_admin_true, title="Admin", url_path="hostadmin")
     ], position="hidden")
     pg.run()
 except Exception as e:
@@ -157,6 +157,8 @@ with st.sidebar:
         st.rerun() # Ini akan membuat halaman reload dan load_all_data otomatis menyesuaikan
 
     st.divider()
+
+    is_authenticated_admin = st.session_state.get("connected", False)
 
     if st.session_state.is_admin:
         # ==========================================
@@ -244,10 +246,10 @@ with st.sidebar:
 
         # Manajemen Produk Kustom (hanya untuk IDR)
        # ==========================================
-    if st.session_state.is_admin and not st.session_state.connected:
+    if st.session_state.is_admin and not is_authenticated_admin:
         st.warning("Silakan hubungkan API Refinitiv (masukkan password) terlebih dahulu untuk mengakses fitur Manajemen Database (CRUD).")
 
-    if st.session_state.is_admin and st.session_state.connected:
+    if st.session_state.is_admin and is_authenticated_admin:
         # ==========================================
         # MANAJEMEN INSTRUMEN (CRUD & AUTO-BACKFILL)
         # ==========================================
