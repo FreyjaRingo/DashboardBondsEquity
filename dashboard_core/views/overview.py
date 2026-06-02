@@ -1,5 +1,6 @@
 import datetime as dt
-
+import os
+import base64
 import numpy as np
 import pandas as pd
 import plotly.express as px
@@ -277,6 +278,60 @@ def render_overview(tab_overview, ctx):
                         marker_color='rgba(255, 165, 0, 0.8)'
                     )
                     st.plotly_chart(fig_liq, use_container_width=True)
+        
+        st.subheader("NAV Harian")
+        upload_dir = "uploads"
+
+        if not os.path.exists(upload_dir):
+            os.makedirs(upload_dir)
+
+        pdf_path = os.path.join(upload_dir, "nav_report.pdf")
+        
+        # ==================================================
+        # 1. BAGIAN UPLOAD (KHUSUS ADMIN)
+        # ==================================================
+        if st.session_state.get('is_admin', False):
+            st.info("Mode Admin: Unggah file PDF NAV harian di sini:")
+            uploaded_file = st.file_uploader(
+                "Pilih file PDF", 
+                type="pdf",
+                key="upload_nav_pdf"
+            )
+            if uploaded_file:
+                with open(pdf_path, "wb") as f:
+                    f.write(uploaded_file.getbuffer())
+                st.success("File berhasil diunggah! NAV telah diperbarui.")
+        
+        # ==================================================
+        # 2. BAGIAN MELIHAT & MENGUNDUH (UNTUK SEMUA PENGGUNA)
+        # ==================================================
+        if os.path.exists(pdf_path):
+            st.success("File PDF NAV harian tersedia.")
+            
+            with open(pdf_path, "rb") as f:
+                pdf_bytes = f.read()
+                
+            # Tombol unduh
+            st.download_button(
+                label="Unduh File NAV Harian",
+                data=pdf_bytes,
+                file_name="nav_report.pdf",
+                mime="application/pdf"
+            )
+            
+            # Fungsi melihat pdf secara langsung via tag embed (Lebih stabil dari Iframe)
+            with st.expander("Lihat Pratinjau Dokumen PDF", expanded=False):
+                base64_pdf = base64.b64encode(pdf_bytes).decode('utf-8')
+                # Menggunakan <embed> dan menambahkan #toolbar=0 untuk mencegah auto-download
+                pdf_display = f'<object data="data:application/pdf;base64,{base64_pdf}#toolbar=0" type="application/pdf" width="100%" height="600px"></object>'
+                st.markdown(pdf_display, unsafe_allow_html=True)
+
+        else:
+            # Pesan jika file belum diunggah sama sekali
+            if not st.session_state.get('is_admin', False):
+                st.warning("File PDF NAV harian belum tersedia. Silakan hubungi admin.")
+            else:
+                st.warning("Belum ada file PDF NAV harian di server.")
 
         st.divider()
 

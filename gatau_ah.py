@@ -85,7 +85,7 @@ if 'is_admin' not in st.session_state:
 try:
     pg = st.navigation([
         st.Page(set_admin_false, title="Umum", url_path="umum"),
-        st.Page(set_admin_true, title="Admin", url_path="host")
+        st.Page(set_admin_true, title="Admin", url_path="Host")
     ], position="hidden")
     pg.run()
 except Exception as e:
