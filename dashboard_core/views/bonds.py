@@ -16,6 +16,7 @@ from dashboard_core.metrics import (
     get_detailed_ranking_history,
     get_monthly_pct_change,
     get_period_performance_ranking,
+    get_nav_performance,
 )
 
 from .common import bind_context
@@ -75,6 +76,16 @@ def render_bonds(tab_gov_bonds, ctx):
     #==================== TAB 6: GRAFIK OBLIGASI NEGARA ====================
     with tab_gov_bonds:
         st.header("Grafik Obligasi Negara (SBN/SUN/Sukuk)")
+
+        st.subheader("NAV Performance Harian (Dari Database)")
+        with st.spinner("Mengkalkulasi NAV Performance..."):
+            df_nav_perf_bonds = get_nav_performance(df_gov_bonds_price_full)
+            if not df_nav_perf_bonds.empty:
+                st.dataframe(df_nav_perf_bonds, use_container_width=True, hide_index=True)
+            else:
+                st.info("Data NAV Performance tidak tersedia.")
+        
+        st.divider()
 
         # Gunakan data utuh (_full) agar rentang waktu bisa ditarik independen dari sidebar
         if not df_gov_bonds_price_full.empty:

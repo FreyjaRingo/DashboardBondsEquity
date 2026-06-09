@@ -459,3 +459,74 @@ def ensure_unique_columns(df):
                                for i, col in enumerate(df.columns)])
     return df
 
+
+@st.cache_data(max_entries=50, show_spinner=False)
+def get_nav_performance(price_data_full):
+    """Menghitung tabel NAV Performance dari observasi NAV database."""
+    if price_data_full.empty:
+        return pd.DataFrame()
+
+    df = price_data_full.copy()
+    df.index = pd.to_datetime(df.index)
+    df = df.sort_index()
+    df = df.apply(pd.to_numeric, errors="coerce").replace([np.inf, -np.inf], np.nan)
+
+    perf_data = []
+
+    def calc_return(current_nav, past_nav):
+        if pd.isna(current_nav) or pd.isna(past_nav) or past_nav <= 0:
+            return np.nan
+        return (current_nav / past_nav) - 1
+
+    def get_last_nav_on_or_before(series, target_date):
+        past_series = series.loc[:target_date].dropna()
+        if past_series.empty:
+            return np.nan
+        return past_series.iloc[-1]
+
+    def get_first_nav_on_or_after(series, target_date, max_date):
+        year_start_series = series.loc[target_date:max_date].dropna()
+        if year_start_series.empty:
+            return np.nan
+        return year_start_series.iloc[0]
+
+    for col in df.columns:
+        series = df[col].dropna()
+        if series.empty:
+            continue
+
+        current_nav = series.iloc[-1]
+        nav_date = series.index[-1]
+        previous_nav = series.iloc[-2] if len(series) > 1 else np.nan
+
+        ret_1d = calc_return(current_nav, previous_nav)
+        ret_1w = calc_return(current_nav, get_last_nav_on_or_before(series, nav_date - pd.DateOffset(days=5)))
+        ret_1m = calc_return(current_nav, get_last_nav_on_or_before(series, nav_date - pd.DateOffset(days=22)))
+        ret_3m = calc_return(current_nav, get_last_nav_on_or_before(series, nav_date - pd.DateOffset(days=63)))
+        ret_1y = calc_return(current_nav, get_last_nav_on_or_before(series, nav_date - pd.DateOffset(days=252)))
+        ret_ytd = calc_return(
+            current_nav,
+            get_first_nav_on_or_after(series, pd.Timestamp(nav_date.year, 1, 1), nav_date)
+        )
+
+        perf_data.append({
+            "Instrument": col,
+            "Date": nav_date.strftime("%Y-%m-%d"),
+            "NAV": current_nav,
+            "1D": ret_1d,
+            "1W": ret_1w,
+            "1M": ret_1m,
+            "3M": ret_3m,
+            "YTD": ret_ytd,
+            "1Y": ret_1y
+        })
+
+    df_perf = pd.DataFrame(perf_data)
+
+    if not df_perf.empty:
+        for c in ["1D", "1W", "1M", "3M", "YTD", "1Y"]:
+            df_perf[c] = df_perf[c].apply(lambda x: "-" if pd.isna(x) else f"{x * 100:.2f}%")
+
+        df_perf["NAV"] = df_perf["NAV"].round(4)
+
+    return df_perf
