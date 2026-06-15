@@ -18,6 +18,12 @@ from dashboard_core.metrics import (
     get_period_performance_ranking,
 )
 
+try:
+    from rrg_module import calculate_rrg, plot_rrg
+    HAS_RRG_MODULE = True
+except ImportError:
+    HAS_RRG_MODULE = False
+
 from .common import bind_context
 
 
@@ -197,3 +203,260 @@ def render_leaderboard(tab_leaderboard_split, ctx):
         else:
             st.warning(f"Tidak ada data {title}.")
 
+        # ==================== RRG (RELATIVE ROTATION GRAPH) ====================
+        st.divider()
+        st.subheader(f"Relative Rotation Graph (RRG) - {title}")
+
+        # RRG memakai produk dari tipe leaderboard yang sedang aktif.
+        df_rrg = df_lb_full.copy()
+        all_rrg_products = df_rrg.columns.tolist()
+
+        rrg_managers = set()
+        for product_name in all_rrg_products:
+            if product_name.startswith("BNP Paribas"):
+                rrg_managers.add("BNP Paribas")
+            elif product_name.startswith("Eastspring"):
+                rrg_managers.add("Eastspring")
+            elif product_name.startswith("TRIM") or product_name.startswith("Trimegah"):
+                rrg_managers.add("Trimegah")
+            else:
+                rrg_managers.add(product_name.split()[0])
+
+        filter_col, product_col = st.columns([1, 2])
+        with filter_col:
+            selected_rrg_managers = st.multiselect(
+                "Filter Berdasarkan Manajer Investasi:",
+                options=sorted(rrg_managers),
+                key=f"rrg_mi_filter_{lb_type}",
+                help="Kosongkan untuk menampilkan produk dari semua manajer investasi.",
+            )
+
+        def matches_rrg_manager(product_name, selected_managers):
+            for manager in selected_managers:
+                if manager == "Trimegah" and (
+                    product_name.startswith("Trimegah") or product_name.startswith("TRIM")
+                ):
+                    return True
+                if product_name.startswith(manager):
+                    return True
+            return False
+
+        if selected_rrg_managers:
+            available_rrg_products = [
+                product_name
+                for product_name in all_rrg_products
+                if matches_rrg_manager(product_name, selected_rrg_managers)
+            ]
+        else:
+            available_rrg_products = all_rrg_products
+
+        # Opsi untuk memuat semua produk
+        manager_key = "|".join(selected_rrg_managers) if selected_rrg_managers else "all"
+        load_all_key = f"rrg_load_all_{lb_type}_{manager_key}"
+
+        with filter_col:
+            load_all_products = st.checkbox(
+                "Load Semua Produk",
+                value=False,
+                key=load_all_key,
+                help="Pilih semua produk yang tersedia untuk RRG.",
+            )
+
+        if load_all_products:
+            default_rrg_products = available_rrg_products
+        else:
+            if selected_rrg_managers:
+                default_rrg_products = available_rrg_products
+            else:
+                default_rrg_products = available_rrg_products[:min(2, len(available_rrg_products))]
+
+        manager_key = "|".join(selected_rrg_managers) if selected_rrg_managers else "all"
+        with product_col:
+            selected_rrg_products = st.multiselect(
+                f"uPilih Produk untuk RRG ({len(available_rrg_products)} tersedia):",
+                options=available_rrg_products,
+                default=default_rrg_products,
+                key=f"rrg_product_filter_{lb_type}_{manager_key}_{load_all_products}",
+            )
+
+        # Pilihan window untuk RRG
+        col_rrg1, col_rrg2, col_rrg3, col_rrg4 = st.columns(4)
+        with col_rrg1:
+            ratio_window = st.slider(
+                "RS Ratio Window",
+                min_value=10,
+                max_value=60,
+                value=20,
+                step=5,
+                help="Window untuk menghitung RS Ratio (default: 20)",
+                key=f"rrg_ratio_window_{lb_type}",
+            )
+        with col_rrg2:
+            momentum_window = st.slider(
+                "RS Momentum Window",
+                min_value=5,
+                max_value=30,
+                value=10,
+                step=1,
+                help="Window untuk menghitung RS Momentum (default: 10)",
+                key=f"rrg_momentum_window_{lb_type}",
+            )
+        with col_rrg3:
+            trail_length = st.slider(
+                "Trail Length",
+                min_value=5,
+                max_value=20,
+                value=10,
+                step=1,
+                help="Jumlah periode untuk menampilkan trailing",
+                key=f"rrg_trail_length_{lb_type}",
+            )
+        with col_rrg4:
+            show_labels_toggle = st.checkbox(
+                "Show Labels",
+                value=True,
+                key=f"rrg_show_labels_{lb_type}",
+            )
+
+        # Ambil benchmark series berdasarkan pilihan
+        bench_for_rrg = get_benchmark_series(selected_benchmark_ticker, full_dfs_dict)
+        benchmark_is_valid = not bench_for_rrg.empty and not (
+            pd.to_numeric(bench_for_rrg, errors="coerce").replace([np.inf, -np.inf], np.nan).dropna() == 0
+        ).all()
+
+        if selected_rrg_products:
+            df_rrg = df_rrg[selected_rrg_products]
+
+        if selected_rrg_products and not df_rrg.empty and benchmark_is_valid and HAS_RRG_MODULE:
+            # Modul RRG akan menyelaraskan benchmark ke tanggal NAV masing-masing produk.
+            df_rrg = df_rrg.sort_index()
+            bench_for_rrg = bench_for_rrg.sort_index()
+
+            # Get fund columns (exclude benchmark if present)
+            fund_cols = [col for col in df_rrg.columns]
+
+            # Calculate RRG using the new module (pass benchmark as Series)
+            try:
+                rrg_result = calculate_rrg(
+                    df_rrg,
+                    benchmark_col_or_series=bench_for_rrg,
+                    fund_cols=fund_cols,
+                    ratio_window=ratio_window,
+                    momentum_window=momentum_window
+                )
+
+                if not rrg_result['current'].empty:
+                    # Create the RRG plot using matplotlib
+                    fig_rrg = plot_rrg(
+                        rrg_result,
+                        trail_length=trail_length,
+                        title=f"RRG - {title} - {rrg_result.get('last_date', pd.Timestamp.now()).strftime('%d %b %Y')}",
+                        show_labels=show_labels_toggle,
+                        show_trails=True,
+                        figsize=(12, 10)
+                    )
+                    st.pyplot(fig_rrg, clear_figure=True)
+
+                    # Summary by quadrant
+                    current_df = rrg_result['current']
+                    col_sum1, col_sum2, col_sum3, col_sum4 = st.columns(4)
+
+                    quadrant_data = {
+                        'Leading': (col_sum1, '🟢', '#2ecc71'),
+                        'Improving': (col_sum2, '🔵', '#3498db'),
+                        'Weakening': (col_sum3, '🟡', '#f39c12'),
+                        'Lagging': (col_sum4, '🔴', '#e74c3c')
+                    }
+
+                    for quad_name, (col, emoji, color) in quadrant_data.items():
+                        count = len(current_df[current_df['Quadrant'] == quad_name])
+                        with col:
+                            st.metric(f"{emoji} {quad_name}", count)
+
+                    display_columns = ['FundName', 'Date', 'RS_Ratio', 'RS_Momentum', 'Quadrant']
+                    display_df = current_df[display_columns].copy()
+                    display_df['Date'] = pd.to_datetime(display_df['Date']).dt.strftime('%d %b %Y')
+                    display_df['RS_Ratio'] = display_df['RS_Ratio'].round(2)
+                    display_df['RS_Momentum'] = display_df['RS_Momentum'].round(2)
+                    display_df['RS_Ratio_Chg'] = np.nan
+                    display_df['RS_Momentum_Chg'] = np.nan
+
+                    if not rrg_result['trailing'].empty:
+                        trailing_df = rrg_result['trailing']
+                        changes = []
+                        for fund in display_df['FundName']:
+                            fund_trailing = trailing_df[
+                                trailing_df['FundName'] == fund
+                            ].sort_values('Date').tail(2)
+                            if len(fund_trailing) >= 2:
+                                rs_ratio_chg = fund_trailing['RS_Ratio'].iloc[-1] - fund_trailing['RS_Ratio'].iloc[-2]
+                                rs_mom_chg = fund_trailing['RS_Momentum'].iloc[-1] - fund_trailing['RS_Momentum'].iloc[-2]
+                            else:
+                                rs_ratio_chg = np.nan
+                                rs_mom_chg = np.nan
+                            changes.append((rs_ratio_chg, rs_mom_chg))
+
+                        display_df['RS_Ratio_Chg'] = [round(change[0], 2) for change in changes]
+                        display_df['RS_Momentum_Chg'] = [round(change[1], 2) for change in changes]
+
+                    # Tampilkan data table RRG lengkap.
+                    with st.expander("📋 Lihat Data RRG Lengkap"):
+                        st.dataframe(display_df.sort_values('Quadrant'), hide_index=True, use_container_width=True)
+
+                    # Tabel produk untuk setiap area RRG.
+                    st.markdown("---")
+                    st.subheader("📋 Tabel Produk per Area RRG")
+                    st.caption("Δ menunjukkan perubahan dibandingkan observasi NAV sebelumnya.")
+
+                    quadrant_table_meta = [
+                        ('Leading', '🟢', 'Kekuatan relatif dan momentum berada di atas 100.'),
+                        ('Improving', '🔵', 'Momentum di atas 100, kekuatan relatif masih di bawah 100.'),
+                        ('Weakening', '🟡', 'Kekuatan relatif di atas 100, momentum mulai di bawah 100.'),
+                        ('Lagging', '🔴', 'Kekuatan relatif dan momentum berada di bawah 100.'),
+                    ]
+                    area_columns = [
+                        'FundName', 'Date', 'RS_Ratio', 'RS_Momentum',
+                        'RS_Ratio_Chg', 'RS_Momentum_Chg',
+                    ]
+                    area_column_names = {
+                        'FundName': 'Produk',
+                        'Date': 'Tanggal NAV',
+                        'RS_Ratio': 'RS Ratio',
+                        'RS_Momentum': 'RS Momentum',
+                        'RS_Ratio_Chg': 'Δ Ratio',
+                        'RS_Momentum_Chg': 'Δ Momentum',
+                    }
+
+                    for row_start in range(0, len(quadrant_table_meta), 2):
+                        area_cols = st.columns(2)
+                        for area_col, (quadrant, emoji, description) in zip(
+                            area_cols, quadrant_table_meta[row_start:row_start + 2]
+                        ):
+                            with area_col:
+                                st.markdown(f"**{emoji} {quadrant}**")
+                                st.caption(description)
+                                area_df = display_df[
+                                    display_df['Quadrant'] == quadrant
+                                ][area_columns].copy()
+                                area_df = area_df.sort_values(
+                                    ['RS_Ratio', 'RS_Momentum'], ascending=False
+                                ).rename(columns=area_column_names)
+                                if area_df.empty:
+                                    st.info(f"Belum ada produk di area {quadrant}.")
+                                else:
+                                    st.dataframe(area_df, hide_index=True, use_container_width=True)
+
+                else:
+                    st.warning("Data tidak mencukupi untuk menghitung RRG.")
+
+            except Exception as e:
+                st.error(f"Error calculating RRG: {str(e)}")
+        else:
+            if not selected_rrg_products:
+                st.warning("Pilih minimal satu produk untuk menampilkan RRG.")
+            elif not HAS_RRG_MODULE:
+                st.error("Modul RRG tidak dapat dimuat.")
+            elif not benchmark_is_valid:
+                st.warning(f"Data benchmark {selected_benchmark_label} tidak tersedia atau tidak valid untuk RRG.")
+            elif df_rrg.empty:
+                st.warning(f"Tidak ada data {title} atau benchmark untuk RRG.")

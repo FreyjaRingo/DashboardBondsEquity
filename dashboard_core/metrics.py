@@ -460,6 +460,52 @@ def ensure_unique_columns(df):
     return df
 
 
+def calculate_rrg_metrics(price_data, benchmark_series, window_ratio=63, window_momentum=20):
+    """
+    Menghitung RS-Ratio dan RS-Momentum untuk RRG (Relative Rotation Graph).
+
+    Parameters:
+    - price_data: DataFrame harga aset
+    - benchmark_series: Series harga benchmark
+    - window_ratio: Window untuk RS-Ratio (default 63 hari = ~3 bulan)
+    - window_momentum: Window untuk RS-Momentum (default 20 hari = ~1 bulan)
+
+    Returns:
+    - DataFrame dengan RS_Ratio dan RS_Momentum untuk setiap instrumen
+    """
+    if price_data.empty or len(price_data) < max(window_ratio, window_momentum) + 2:
+        return pd.DataFrame()
+
+    # Forward fill untuk handle missing data
+    price_data = price_data.ffill()
+    benchmark_series = benchmark_series.ffill()
+
+    # Hitung Relative Strength Ratio = Price / Benchmark
+    # RS-Ratio menggunakan smoothed ratio dengan moving average
+    rs_ratio_df = pd.DataFrame()
+    for col in price_data.columns:
+        # Calculate RS Ratio as the ratio of price to benchmark
+        rs_raw = price_data[col] / benchmark_series
+
+        # Smooth dengan moving average untuk RS-Ratio
+        rs_ratio_df[col] = rs_raw.rolling(window=window_ratio).mean()
+
+    # Hitung RS-Momentum = Rate of Change dari RS-Ratio
+    rs_momentum_df = rs_ratio_df.pct_change(periods=window_momentum) * 100
+
+    # Ambil nilai terakhir (saat ini) untuk setiap instrumen
+    result = pd.DataFrame({
+        'RS_Ratio': rs_ratio_df.iloc[-1],
+        'RS_Momentum': rs_momentum_df.iloc[-1]
+    })
+
+    # Buang instrumen yang tidak valid (NaN atau inf)
+    result = result.replace([np.inf, -np.inf], np.nan)
+    result = result.dropna()
+
+    return result
+
+
 @st.cache_data(max_entries=50, show_spinner=False)
 def get_nav_performance(price_data_full):
     """Menghitung tabel NAV Performance dari observasi NAV database."""
