@@ -1,15 +1,29 @@
+# Dashboard Bonds & Equity - Requirements
+# Install: pip install -r requirements.txt
+
+# Core
 streamlit
-refinitiv-data
 pandas
 numpy
+
+# Visualization
 matplotlib
 seaborn
-statsmodels
+plotly
+
+# Statistics & Analytics
 scipy
 scikit-learn
-plotly
+statsmodels
+pyindicators
+
+# Data Sources
+refinitiv-data
 supabase
 postgrest
-pyindicators
-pypdfium2
 httpx==0.26.0
+
+# PDF
+pypdfium2
+
+# RRG Module (uses matplotlib, numpy, pandas)
