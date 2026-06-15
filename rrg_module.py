@@ -230,8 +230,8 @@ def plot_rrg(rrg_data, trail_length=5, title=None, figsize=(12, 10), show_labels
 
     # Generate unique colors for each fund using a colormap
     n_funds = len(current_df)
-    cmap = plt.cm.get_cmap('tab20', n_funds) if n_funds <= 20 else plt.cm.get_cmap('hsv', n_funds)
-    fund_colors = {row['FundName']: cmap(i) for i, (_, row) in enumerate(current_df.iterrows())}
+    cmap = plt.colormaps.get_cmap('tab20') if n_funds <= 20 else plt.colormaps.get_cmap('hsv')
+    fund_colors = {row['FundName']: cmap(i / max(n_funds - 1, 1)) for i, (_, row) in enumerate(current_df.iterrows())}
 
     visible_trails = []
     if show_trails and not trailing_df.empty:
