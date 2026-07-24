@@ -21,7 +21,8 @@ pyindicators
 refinitiv-data
 supabase
 postgrest
-httpx==0.26.0
+# Pin longgar: 0.26 minimum utk kompatibilitas refinitiv-data, <1.0 utk supabase-py
+httpx>=0.26,<1.0
 
 # PDF
 pypdfium2

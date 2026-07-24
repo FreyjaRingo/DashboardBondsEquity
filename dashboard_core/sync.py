@@ -328,7 +328,8 @@ def validate_ticker(ticker, product_type):
     try:
         df = rd.get_data(universe=[ticker], fields=[field])
         return not df.empty
-    except:
+    except Exception as e:
+        print(f"[WARN] validate_ticker({ticker}, {product_type}) gagal: {e}")
         return False
 
 
@@ -341,5 +342,6 @@ def get_instrument_launch_date(ticker, field):
             # Convert ke string YYYY-MM-DD
             return str(pd.to_datetime(raw_val).date())
         return "2000-01-01"
-    except:
+    except Exception as e:
+        print(f"[WARN] get_instrument_launch_date({ticker}, {field}) gagal, fallback 2000-01-01: {e}")
         return "2000-01-01"

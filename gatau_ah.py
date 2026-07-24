@@ -43,6 +43,23 @@ def start_cron_job():
                 run_daily_sync(start_dates, end_d)
                 load_all_data.clear() # Bersihkan cache dashboard agar memuat data terbaru
                 print("Auto-sync selesai!")
+
+            # --- SYNC SEKTOR & FX (Dashboard Kekuatan Sektoral) ---
+            try:
+                from dashboard_core.sector_sync import (
+                    get_sector_sync_start_dates,
+                    has_pending_sector_sync,
+                    run_sector_sync,
+                )
+                from dashboard_core.sector_data import load_sector_data
+                sec_starts = get_sector_sync_start_dates()
+                if has_pending_sector_sync(sec_starts, end_d):
+                    print("Memulai auto-sync data sektor & FX...")
+                    run_sector_sync(sec_starts, end_d)
+                    load_sector_data.clear()
+                    print("Auto-sync sektor selesai!")
+            except Exception as e:
+                print(f"Error sync sektor (CRON): {e}")
         except Exception as e:
             print(f"Error pada CRON JOB: {e}")
 
@@ -89,7 +106,29 @@ try:
     ], position="hidden")
     pg.run()
 except Exception as e:
-    pass
+    print(f"[WARN] Navigasi halaman gagal (fallback ke mode Umum): {e}")
+
+# ==================== PEMILIH HALAMAN (REKSA DANA vs SEKTOR) ====================
+# Catatan: st.navigation di atas menonaktifkan auto-discovery folder pages/,
+# sehingga halaman sektor dirender lewat selector ini.
+from dashboard_core.views.sector_strength import render_sector_strength
+from dashboard_core.views.sector_rrg import render_sector_rrg
+from dashboard_core.views.cross_market import render_cross_market
+
+_SECTOR_PAGES = {
+    "Sector Strength": render_sector_strength,
+    "Sector RRG": render_sector_rrg,
+    "Cross-Market": render_cross_market,
+}
+_selected_page = st.sidebar.radio(
+    "Halaman",
+    ["Reksa Dana & Obligasi"] + list(_SECTOR_PAGES.keys()),
+    key="page_selector",
+)
+st.sidebar.divider()
+if _selected_page in _SECTOR_PAGES:
+    _SECTOR_PAGES[_selected_page]()
+    st.stop()
 
 # ==================== GLOBAL CACHE REGISTRY ====================
 @st.cache_resource
