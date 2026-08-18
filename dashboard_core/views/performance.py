@@ -233,20 +233,11 @@ def render_performance(tab_performance, ctx):
             climb_metrics = ['Climb_1d', 'Climb_7d', 'Climb_14d', 'Climb_22d']
             val_metrics = ['Z_Score', 'Status_Valuasi', 'Skor_Valuasi']
 
-            # 2. Filter Dinamis Sesuai Mode di Sidebar
-            active_metrics = []
-            if scoring_mode == "Balanced (Semua Metrik)":
-                active_metrics = return_metrics + risk_metrics + consist_metrics + climb_metrics + val_metrics
-            elif scoring_mode == "Fokus Return (Profit)":
-                active_metrics = return_metrics
-            elif scoring_mode == "Fokus Risiko & Rasio":
-                active_metrics = risk_metrics
-            elif scoring_mode == "Fokus Konsistensi":
-                active_metrics = consist_metrics
-            elif scoring_mode == "Fokus Momentum (Climbers)":
-                active_metrics = climb_metrics
-            elif scoring_mode == "Fokus Valuasi (Murah/Mahal)":
-                active_metrics = val_metrics
+            # 2. Selalu tampilkan semua metrik di tabel detail.
+            # Catatan: `scoring_mode` hanya mengubah BOBOT Total_Score (lihat weights_dict),
+            # bukan kolom mana yang ditampilkan -- supaya tabel tetap menampilkan nilai
+            # mentah semua metrik untuk perbandingan langsung, sesuai caption di atas.
+            active_metrics = return_metrics + risk_metrics + consist_metrics + climb_metrics + val_metrics
 
             # 3. Bangun Urutan Kolom
             cols_order = ['Total_Score']
