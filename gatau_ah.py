@@ -724,7 +724,8 @@ def render_main_dashboard():
         #"Rekomendasi", tab_recommendation
     ])
 
-    ctx = SimpleNamespace(**locals())
+    # Gabungkan global (widget sidebar: date_option, scoring_mode, dll.) dengan lokal fungsi ini
+    ctx = SimpleNamespace(**{**globals(), **locals()})
     render_overview(tab_overview, ctx)
     render_leaderboard(tab_leaderboard_split, ctx)
     render_correlation(tab_correlation, ctx)
