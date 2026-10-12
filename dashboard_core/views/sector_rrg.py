@@ -39,6 +39,10 @@ def render_sector_rrg():
     sector_rics = [c for c in prices.columns if c != bench_ric]
     df_named = prices.rename(columns=name_map)
     fund_cols = [name_map.get(r, r) for r in sector_rics]
+    if weekly:
+        # calculate_rrg tidak punya opsi mingguan: resample ke penutupan Jumat dulu
+        df_named.index = pd.to_datetime(df_named.index)
+        df_named = df_named.resample("W-FRI").last().dropna(how="all")
 
     rrg = calculate_rrg(
         df_named,
@@ -46,7 +50,6 @@ def render_sector_rrg():
         fund_cols=fund_cols,
         ratio_window=ratio_window,
         momentum_window=momentum_window,
-        weekly=weekly,
     )
     current = rrg.get("current", pd.DataFrame())
     if current.empty:
